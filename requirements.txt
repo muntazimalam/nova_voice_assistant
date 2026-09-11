@@ -11,13 +11,18 @@ openwakeword>=0.5.0
 onnxruntime>=1.19.0
 httpx>=0.27.0
 
+# Audio codec (Opus) for efficient streaming
+opuslib>=3.0.1
+
+# Voice Activity Detection (Silero VAD)
+torch>=2.0.0
+
 # XTTS-v2 (TTS_ENGINE=xtts) — human-sounding local neural voice.
 # CPU wheels (the +cpu build) come from the PyTorch CPU index; the two
 # transformer pins matter on Python 3.13: 5.x dropped isin_mps_friendly,
 # <4.57 lacks is_torchcodec_available.
 --extra-index-url https://download.pytorch.org/whl/cpu
 coqui-tts==0.27.5
-torch==2.14.0+cpu
 torchaudio==2.11.0+cpu
 torchcodec==0.16.0+cpu
 transformers>=4.57,<4.60

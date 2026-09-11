@@ -15,3 +15,5 @@ def pytest_configure(config):
 
     # Do real warmup in dev, never in tests.
     main._warmup = lambda: None
+    # Skip advanced feature init (no torch/opus in test env)
+    main._init_advanced_features = lambda: None

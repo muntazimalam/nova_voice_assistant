@@ -1,11 +1,8 @@
 /**
- * AURA AI Voice Assistant — Phase 2 Client Controller
+ * Nova AI Voice Assistant — Client Controller
  *
- * Additions over Phase 1:
- *  - Real microphone capture via getUserMedia + AudioWorklet (16 kHz PCM Int16)
- *  - PCM frames streamed to the backend as binary WebSocket messages
- *  - TTS MP3 playback: binary chunks reassembled → AudioContext.decodeAudioData → play
- *  - Binary / text message demuxing on onmessage
+ * Real-time voice assistant with bidirectional audio streaming,
+ * LLM-powered responses, and neural TTS synthesis.
  */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -478,7 +475,10 @@ registerProcessor('downsample-processor', DownsampleProcessor);
 
   function initWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl    = `${protocol}//${window.location.host}/ws`;
+    // Session ID for connection resumption — reconnecting mid-conversation
+    // restores the same conversation history instead of starting fresh.
+    const storedSession = localStorage.getItem('nova_session_id') || '';
+    const wsUrl    = `${protocol}//${window.location.host}/ws${storedSession ? '?session=' + storedSession : ''}`;
 
     updateConnectionStatus('connecting', 'Connecting…');
     logTerminal('system', `Connecting to WebSocket: ${wsUrl}`);
@@ -497,6 +497,8 @@ registerProcessor('downsample-processor', DownsampleProcessor);
       reconnectAttempts = 0;
       updateConnectionStatus('connected', 'Live Connected');
       setAssistantState('IDLE');
+      const wsEndpoint = document.getElementById('wsEndpoint');
+      if (wsEndpoint) wsEndpoint.textContent = wsUrl;
       logTerminal('system', 'WebSocket established (HTTP 101 Switching Protocols)');
       sendPing();
     };
@@ -581,6 +583,11 @@ registerProcessor('downsample-processor', DownsampleProcessor);
 
     if (msgType === 'system_event') {
       logTerminal('system', `${data.message}${data.details ? ' (' + data.details + ')' : ''}`, 'system');
+      // Extract session ID for connection resumption
+      const sessionMatch = data.message && data.message.match(/Session: ([a-f0-9]+)/i);
+      if (sessionMatch) {
+        localStorage.setItem('nova_session_id', sessionMatch[1]);
+      }
       return;
     }
 

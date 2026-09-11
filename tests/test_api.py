@@ -21,7 +21,7 @@ class TestHttpApi:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "healthy"
-        assert body["version"] == "2.1.0"
+        assert body["version"] == main.__version__
         assert body["active_ws_connections"] == 0
         assert "wake_strategy" in body
         assert "stt_model" in body
@@ -32,7 +32,7 @@ class TestHttpApi:
         resp = client.get("/")
         assert resp.status_code == 200
         assert "Nova" in resp.text
-        assert "v2.1.0" in resp.text
+        assert f"v{main.__version__}" in resp.text
         assert "/static/js/app.js" in resp.text
 
     def test_unknown_route_404(self, client):

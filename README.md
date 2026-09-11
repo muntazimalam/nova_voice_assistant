@@ -15,15 +15,22 @@ version: 2.1.0  (see app/__init__.py — single source of truth)
 
 - **Push-to-talk and hands-free modes** — tap the orb/button to talk, or say the wake
   phrase (`hey nova` / `nova`) out loud.
-- **Instant endpointing** — chunk-level VAD finalizes the utterance ~450 ms after you
-  stop speaking; a 100 ms watchdog covers dropped frames.
+- **Instant endpointing** — chunk-level VAD (Silero, with RMS fallback) finalizes the
+  utterance ~450 ms after you stop speaking; a 100 ms watchdog covers dropped frames.
 - **Streaming speech** — the reply is split into clauses as Gemini writes them; each
   clause is synthesized and played gaplessly while the next one is still being generated.
 - **Barge-in / interrupt** — talking over the assistant (or tapping while it speaks)
-  stops it immediately, and it returns to standby for your next command.
+  stops it immediately, and it returns to standby for your next command. Echo
+  cancellation prevents the assistant's own voice from re-triggering the mic.
 - **Hands-free follow-up** — after answering, it keeps listening for the next turn.
 - **Live telemetry** — STT / LLM first-token / first-spoken-clause / total round-trip
   times are streamed to the dashboard HUD.
+- **LLM response caching** — identical queries answered from an in-memory LRU cache,
+  eliminating repeat API latency.
+- **Opus codec** — bandwidth-efficient audio streaming (falls back to raw PCM).
+- **Connection resumption** — reconnecting mid-conversation restores your history.
+- **Rate limiting** — per-client token bucket prevents abuse.
+- **Structured logging** — correlation IDs trace each request end-to-end.
 
 ## 2. Architecture
 
@@ -31,20 +38,22 @@ version: 2.1.0  (see app/__init__.py — single source of truth)
 Browser (app/static/js/app.js)              Backend (app/)
 ───────────────────────────────             ─────────────────────────────
 AudioWorklet downsample → 16kHz PCM ──►     handle_audio_frame
-WebSocket (binary PCM + JSON frames)        ├─ VAD endpointing + watchdog
+WebSocket (binary PCM + JSON frames)        ├─ echo cancellation + VAD endpointing
 WebAudio gapless playback ◄───── MP3/WAV ◄───►  ├─ wake word (whisper / OWW)
 Siri/Alexa chimes, HUD, conversation        ├─ faster-whisper tiny (local)
-                                            ├─ Gemini streaming + fallback
+                                            ├─ Gemini streaming + fallback + cache
                                             └─ XTTS-v2 local neural (or edge-tts)
 ```
 
 | Layer      | Technology                                          |
 |------------|-----------------------------------------------------|
 | Transport  | FastAPI / ASGI + WebSockets (binary + text frames)  |
-| STT        | faster-whisper `tiny`, int8, CPU, VAD               |
-| LLM        | Google Gemini `gemini-flash-lite-latest` (streaming) |
+| Codec      | Opus (optional, auto-fallback to PCM)              |
+| STT        | faster-whisper `tiny`, int8, CPU, VAD + Silero VAD  |
+| LLM        | Google Gemini streaming + fallback + LRU cache     |
 | TTS        | XTTS-v2 local neural (most human, WAV) or edge-tts MP3 / Piper |
 | Wake word  | openWakeWord gate + Whisper confirm, or Whisper sniffing |
+| ECHO/AEC   | In-process spectral echo cancellation + grace period |
 
 ### Speech pipeline stages
 
@@ -86,8 +95,8 @@ pytest -q
 | Variable | Default | Purpose |
 |---|---|---|
 | `GEMINI_API_KEY` | — | Google Gemini API key (**required**) |
-| `GEMINI_MODEL` | `gemini-flash-lite-latest` | Primary LLM |
-| `GEMINI_FALLBACK_MODELS` | `gemini-3.5-flash-lite, gemini-3.6-flash` | Tried if the primary fails pre-token |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Primary LLM |
+| `GEMINI_FALLBACK_MODELS` | `gemini-2.0-flash-lite, gemini-1.5-flash` | Tried if the primary fails pre-token |
 | `WHISPER_MODEL` | `tiny` | Local STT size |
 | `TTS_ENGINE` | `xtts` | `xtts` (local neural) / `edge` (cloud MP3) / `piper` (local WAV) |
 | `TTS_VOICE` | `en-US-JennyNeural` | edge-tts voice |
@@ -101,6 +110,16 @@ pytest -q
 | `WAKE_PHRASES` | `["hey nova", "nova"]` | Wake phrases (whisper mode) |
 | `SILENCE_TIMEOUT_MS` | `450` | Silence that ends an utterance |
 | `MAX_COMMAND_MS` | `12000` | Hard cap on a single command |
+| `USE_OPUS_CODEC` | `true` | Opus codec for streaming (falls back to PCM) |
+| `USE_SILERO_VAD` | `true` | Neural VAD endpointing (falls back to RMS) |
+| `USE_ECHO_CANCELLATION` | `true` | Acoustic echo cancellation for barge-in |
+| `LLM_CACHE_ENABLED` | `true` | Cache repeat LLM queries |
+| `LLM_CACHE_MAX_SIZE` | `1000` | Max cached responses |
+| `LLM_CACHE_TTL_SECONDS` | `3600` | Cache expiry (seconds) |
+| `CONVERSATION_SUMMARY_ENABLED` | `false` | Summarize long conversations |
+| `RATE_LIMIT_ENABLED` | `true` | Per-client request throttling |
+| `RATE_LIMIT_MAX_REQUESTS` | `120` | Requests per window |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate-limit window |
 
 ### Local XTTS-v2 TTS (default — the most human voice, runs fully offline)
 
@@ -189,9 +208,17 @@ app/
 ├── piper_tts.py       # optional local Piper/onnx runner
 ├── wake.py            # wake-word detection (OWW gate + Whisper confirm / sniff)
 ├── state.py           # per-connection state machine
+├── cache.py           # LLM response LRU cache + conversation summarizer
+├── codec.py           # Opus audio codec (encode/decode)
+├── vad.py             # Silero VAD + endpoint detector
+├── echo_cancel.py     # acoustic echo cancellation
+├── rate_limit.py      # per-client token bucket limiter
+├── logging_config.py  # structured logging with correlation IDs
 ├── templates/index.html
 └── static/            # dashboard UI (css/js)
 run.py                 # launcher with port preflight + banner
+Dockerfile             # containerized deployment
+docker-compose.yml     # multi-service production config
 tests/                 # pytest suite
 ```
 
@@ -203,3 +230,17 @@ tests/                 # pytest suite
 - XTTS-v2 is a **CPU-bound** ~3-9 s per clause on this machine — most human-sounding,
   but replies are delayed. `TTS_ENGINE=edge` trades voice quality for ~300 ms first
   voice; Piper is a middle ground (local, faster, more robotic).
+
+## 8. Deployment
+
+```powershell
+# Docker
+docker compose up --build
+# Health check
+curl http://localhost:8000/api/health
+# Metrics
+curl http://localhost:8000/api/metrics
+```
+
+CI/CD runs on push to `main` via GitHub Actions (`.github/workflows/ci.yml`):
+lint (ruff) → type-check (mypy) → test (pytest) → Docker image build & push.

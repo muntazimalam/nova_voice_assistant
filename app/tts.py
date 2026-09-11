@@ -26,10 +26,13 @@ logger = logging.getLogger("voice_assistant")
 class TextToSpeech:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self.engine = settings.tts_engine.lower().strip() or "edge"
+        self._configured_engine = settings.tts_engine.lower().strip() or "edge"
+        self.engine = self._configured_engine
         self.encoding = "mp3" if self.engine == "edge" else "wav"
         self._piper = None  # lazy, optional
         self._xtts = None  # lazy, optional
+        self._fallback_count = 0
+        self._max_retries_before_fallback = 3
 
     @property
     def piper_available(self) -> bool:
@@ -54,7 +57,8 @@ class TextToSpeech:
 
         If the configured engine (piper or xtts) is unavailable — missing
         model / package / license flag — fall back to edge-tts so a reply
-        (and first voice latency) is never lost.
+        (and first voice latency) is never lost. Engines can recover after
+        temporary failures.
         """
         if not text.strip():
             return
@@ -63,16 +67,36 @@ class TextToSpeech:
             try:
                 engine = self._get_piper() if self.engine == "piper" else self._get_xtts()
                 engine.load()  # raise fast here if unconfigured
+                self._fallback_count = 0  # Reset on success
                 async for chunk in engine.stream_audio(text):
                     yield chunk
                 return
             except Exception as exc:  # noqa: BLE001
-                logger.warning("%s TTS unavailable (%s); using edge-tts.", self.engine, exc)
-                self.engine = "edge"
-                self.encoding = "mp3"
+                self._fallback_count += 1
+                logger.warning(
+                    "%s TTS unavailable (%s) [attempt %d/%d]; using edge-tts.",
+                    self.engine, exc, self._fallback_count, self._max_retries_before_fallback,
+                )
+                # Only permanently switch to edge after repeated failures
+                if self._fallback_count >= self._max_retries_before_fallback:
+                    logger.warning("Permanently switching to edge-tts after %d failures.", self._fallback_count)
+                    self.engine = "edge"
+                    self.encoding = "mp3"
+                else:
+                    # Temporary fallback: use edge for this request but keep trying the local engine
+                    async for chunk in self._stream_edge_mp3(text):
+                        yield chunk
+                    return
 
         async for chunk in self._stream_edge_mp3(text):
             yield chunk
+
+    def reset_engine(self) -> None:
+        """Reset to the originally configured engine (e.g. after model re-download)."""
+        self.engine = self._configured_engine
+        self.encoding = "mp3" if self.engine == "edge" else "wav"
+        self._fallback_count = 0
+        logger.info("TTS engine reset to %s.", self.engine)
 
     async def _stream_edge_mp3(self, text: str) -> AsyncIterator[bytes]:
         import edge_tts

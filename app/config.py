@@ -1,6 +1,4 @@
 """Application settings loaded from environment variables (.env)."""
-from functools import lru_cache
-
 from pydantic import Field
 from pydantic.aliases import AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,8 +20,8 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     )
-    gemini_model: str = "gemini-3.5-flash-lite"  # fastest stable Flash tier; avoids alias-pool routing latency
-    gemini_fallback_models: list[str] = ["gemini-3.1-flash-lite", "gemini-3.5-flash"]
+    gemini_model: str = "gemini-2.0-flash"  # fastest stable Flash tier; avoids alias-pool routing latency
+    gemini_fallback_models: list[str] = ["gemini-2.0-flash-lite", "gemini-1.5-flash"]
     gemini_system_prompt: str = (
         "You are Nova, a warm, human-sounding voice assistant. Talk to the user "
         "the way Alexa or Siri does: friendly, casual, and natural, exactly as if "
@@ -91,6 +89,33 @@ class Settings(BaseSettings):
 
     # OpenWakeWord (optional)
     ow_model_dir: str = "models/wake"
+
+    # --- Advanced audio pipeline ---
+    # Opus codec for bandwidth-efficient audio streaming (auto-falls back to PCM)
+    use_opus_codec: bool = True
+    # Silero VAD for precision endpointing (auto-falls back to RMS)
+    use_silero_vad: bool = True
+    # Acoustic echo cancellation for barge-in (auto-falls back to grace period)
+    use_echo_cancellation: bool = True
+
+    # LLM response caching
+    llm_cache_enabled: bool = True
+    llm_cache_max_size: int = 1000
+    llm_cache_ttl_seconds: float = 3600.0
+
+    # Conversation summarization
+    conversation_summary_enabled: bool = False
+    conversation_summary_turns: int = 8  # summarize after this many turns
+    conversation_summary_max_chars: int = 400
+
+    # Rate limiting (requests per client per time window)
+    rate_limit_enabled: bool = True
+    rate_limit_max_requests: int = 120
+    rate_limit_window_seconds: float = 60.0
+    rate_limit_burst_size: int = 10
+
+    # Structured logging
+    structured_logging: bool = True
 
 
 def get_settings() -> Settings:

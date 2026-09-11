@@ -1,0 +1,30 @@
+# Nova AI Voice Assistant - Docker Compose for production
+version: '3.8'
+
+services:
+  voice-assistant:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - TTS_ENGINE=${TTS_ENGINE:-edge}
+      - WHISPER_MODEL=${WHISPER_MODEL:-base}
+      - WAKE_STRATEGY=${WAKE_STRATEGY:-auto}
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-12}
+    volumes:
+      - ./models:/app/models
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

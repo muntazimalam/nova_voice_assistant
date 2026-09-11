@@ -23,7 +23,7 @@ class LLMService:
         self._settings = settings
         self._client: genai.Client | None = None
 
-    def _load(self) -> genai.Client:
+    def load(self) -> genai.Client:
         if self._client is not None:
             return self._client
 
@@ -195,7 +195,7 @@ class LLMService:
         silent stall. TimeoutError while suspended is raised at the next chunk
         and caught by the caller's exceptions handling.
         """
-        client = self._load()
+        client = self.load()
 
         config = types.GenerateContentConfig(
             system_instruction=self._settings.gemini_system_prompt,

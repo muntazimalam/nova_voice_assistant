@@ -6,7 +6,7 @@ clause-streamed synthesized speech back over the same socket — so the assistan
 starts talking while the LLM is still finishing its reply.
 
 ```
-version: 2.3.0  (see app/__init__.py — single source of truth)
+version: 2.5.0  (see app/__init__.py — single source of truth)
 ```
 
 ---
@@ -21,7 +21,11 @@ version: 2.3.0  (see app/__init__.py — single source of truth)
   clause is synthesized and played gaplessly while the next one is still being generated.
 - **Barge-in / interrupt** — talking over the assistant (or tapping while it speaks)
   stops it immediately, and it returns to standby for your next command. Echo
-  cancellation prevents the assistant's own voice from re-triggering the mic.
+  cancellation prevents the assistant's own voice from re-triggering the mic, and a
+  "gap" gate makes it impossible for continuous reply echo to self-truncate speech:
+  barge-in only counts during a genuine pause in Nova's audio.
+- **Unlimited speech length** — replies are streamed clause-by-clause with no fixed
+  sentence cap; the model speaks as long as it needs (ceiling only via `LLM_MAX_OUTPUT_TOKENS`).
 - **Hands-free follow-up** — after answering, it keeps listening for the next turn.
 - **Live telemetry** — STT / LLM first-token / first-spoken-clause / total round-trip
   times are streamed to the dashboard HUD.
@@ -40,7 +44,7 @@ Browser (app/static/js/app.js)              Backend (app/)
 AudioWorklet downsample → 16kHz PCM ──►     handle_audio_frame
 WebSocket (binary PCM + JSON frames)        ├─ echo cancellation + VAD endpointing
 WebAudio gapless playback ◄───── MP3/WAV ◄───►  ├─ wake word (whisper / OWW)
-Siri/Alexa chimes, HUD, conversation        ├─ faster-whisper tiny (local)
+Siri/Alexa chimes, HUD, conversation        ├─ faster-whisper base (local)
                                             ├─ Gemini streaming + fallback + cache
                                             └─ XTTS-v2 local neural (or edge-tts)
 ```
@@ -49,11 +53,11 @@ Siri/Alexa chimes, HUD, conversation        ├─ faster-whisper tiny (local)
 |------------|-----------------------------------------------------|
 | Transport  | FastAPI / ASGI + WebSockets (binary + text frames)  |
 | Codec      | Opus (optional, auto-fallback to PCM)              |
-| STT        | faster-whisper `tiny`, int8, CPU, VAD + Silero VAD  |
+| STT        | faster-whisper `base`, int8, CPU, VAD + Silero VAD  |
 | LLM        | Google Gemini streaming + fallback + LRU cache     |
 | TTS        | XTTS-v2 local neural (most human, WAV) or edge-tts MP3 / Piper |
 | Wake word  | openWakeWord gate + Whisper confirm, or Whisper sniffing |
-| ECHO/AEC   | In-process spectral echo cancellation + grace period |
+| ECHO/AEC   | Browser AEC (echoCancellation) + server-side PCM echo gate + grace |
 
 ### Speech pipeline stages
 
@@ -95,10 +99,10 @@ pytest -q
 | Variable | Default | Purpose |
 |---|---|---|
 | `GEMINI_API_KEY` | — | Google Gemini API key (**required**) |
-| `GEMINI_MODEL` | `gemini-2.0-flash` | Primary LLM |
-| `GEMINI_FALLBACK_MODELS` | `gemini-2.0-flash-lite, gemini-1.5-flash` | Tried if the primary fails pre-token |
-| `WHISPER_MODEL` | `tiny` | Local STT size |
-| `TTS_ENGINE` | `xtts` | `xtts` (local neural) / `edge` (cloud MP3) / `piper` (local WAV) |
+| `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Primary LLM (fastest tier) |
+| `GEMINI_FALLBACK_MODELS` | `gemini-3.6-flash, gemini-flash-latest` | Tried if the primary fails pre-token |
+| `WHISPER_MODEL` | `base` | Local STT size |
+| `TTS_ENGINE` | `edge` | `edge` (cloud MP3, fast) / `xtts` (local neural) / `piper` (local WAV) |
 | `TTS_VOICE` | `en-US-JennyNeural` | edge-tts voice |
 | `TTS_RATE` | `+4%` | edge-tts speaking rate |
 | `TTS_PITCH` | `+0Hz` | edge-tts pitch adjustment |
@@ -112,7 +116,12 @@ pytest -q
 | `MAX_COMMAND_MS` | `12000` | Hard cap on a single command |
 | `USE_OPUS_CODEC` | `true` | Opus codec for streaming (falls back to PCM) |
 | `USE_SILERO_VAD` | `true` | Neural VAD endpointing (falls back to RMS) |
-| `USE_ECHO_CANCELLATION` | `true` | Acoustic echo cancellation for barge-in |
+| `USE_ECHO_CANCELLATION` | `true` | Echo cancellation w/ browser AEC + PCM echo gate |
+| `BARGE_IN_REQUIRED_FRAMES` | `5` | Consecutive voiced frames (~100 ms) before barge-in interrupts a reply |
+| `BARGE_IN_GRACE_MS` | `600` | Ignore barge-in this long after a reply starts |
+| `BARGE_IN_GAP_MS` | `250` | Ignore barge-in while TTS audio is flowing; only during a real pause |
+| `LLM_MAX_OUTPUT_TOKENS` | `2048` | Ceiling on reply length (0 = no limit) |
+| `SESSION_TTL_SECONDS` | `3600` | How long disconnected session history is kept |
 | `LLM_CACHE_ENABLED` | `true` | Cache repeat LLM queries |
 | `LLM_CACHE_MAX_SIZE` | `1000` | Max cached responses |
 | `LLM_CACHE_TTL_SECONDS` | `3600` | Cache expiry (seconds) |
@@ -121,7 +130,7 @@ pytest -q
 | `RATE_LIMIT_MAX_REQUESTS` | `120` | Requests per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate-limit window |
 
-### Local XTTS-v2 TTS (default — the most human voice, runs fully offline)
+### Local XTTS-v2 TTS (optional — most human voice, runs fully offline)
 
 XTTS-v2 (Coqui) is a neural multi-speaker model that reproduces a warm human
 voice without any cloud service. Because it runs on CPU here, each clause takes
@@ -133,7 +142,7 @@ import.
 ```powershell
 # Dependencies are in requirements.txt (torch CPU, coqui-tts, transformers pinned).
 COQUI_TOS_AGREED=1   # set once in your shell/`.env` after reading the license
-TTS_ENGINE=xtts      # already the default
+TTS_ENGINE=xtts       # switch from the default edge
 # Optional bundled reference voices: Claribel Dervla, Daisy Studious, Gracie Wise,
 # Tammie Ema, Alison Dietlinde ... (TTS_XTTS_SPEAKER)
 ```

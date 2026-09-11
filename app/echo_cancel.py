@@ -33,45 +33,113 @@ class EchoCanceler:
     _filter_weights: Optional[np.ndarray] = field(default=None, repr=False)
     _last_output_time: float = field(default=0.0)
     _is_outputting: bool = field(default=False)
+    _has_pcm_reference: bool = field(default=False)
+    _pending_wav: bytearray = field(default_factory=bytearray, repr=False)
+    _wav_payload_start: Optional[int] = field(default=None, repr=False)
     
     def __post_init__(self) -> None:
         filter_len = int(self.sample_rate * self.filter_length_ms / 1000)
         self._filter_weights = np.zeros(filter_len, dtype=np.float32)
-    
+
     def register_output(self, pcm_int16: bytes) -> None:
-        """Register assistant audio output for echo tracking."""
+        """Register a raw-PCM chunk of assistant output for echo tracking."""
+        if not pcm_int16:
+            return
         samples = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
+        if samples.size == 0:
+            return
         self._output_buffer.append(samples)
         self._output_timestamps.append(time.monotonic())
         self._last_output_time = time.monotonic()
         self._is_outputting = True
-    
+        self._has_pcm_reference = True
+
+    def register_container_output(self, chunk: bytes, encoding: str) -> None:
+        """Register a TTS output chunk.
+
+        ``encoding == "wav"`` chunks are RIFF containers from local engines
+        (XTTS/Piper) — the header is stripped here so only real PCM reaches the
+        references. Any other encoding (e.g. edge-tts MP3) cannot be decoded
+        server-side, so only the timing is recorded and ``_has_pcm_reference``
+        stays ``False`` (similarity-based echo checks are then disabled rather
+        than comparing against compressed bytes interpreted as PCM).
+        """
+        if encoding == "wav":
+            self._pending_wav.extend(chunk)
+            pcm = self._consume_wav()
+            self.register_output(pcm)
+        else:
+            # Encoded output (MP3): record timing so `is_echo` timeouts behave,
+            # but do NOT feed the compressed bytes into the PCM reference.
+            self._last_output_time = time.monotonic()
+            self._is_outputting = True
+
+    def _consume_wav(self) -> bytes:
+        """Extract the PCM payload from a possibly-straddled RIFF stream."""
+        buf = self._pending_wav
+        if self._wav_payload_start is None:
+            if len(buf) < 12:
+                return b""
+            start = self._find_wav_data_offset(bytes(buf))
+            self._wav_payload_start = start if start is not None else 0
+        start = self._wav_payload_start
+        if start >= len(buf):
+            return b""
+        data = bytes(buf[start:])
+        buf.clear()
+        self._wav_payload_start = None
+        return data
+
+    @staticmethod
+    def _find_wav_data_offset(wav: bytes) -> Optional[int]:
+        """Return byte offset of the ``data`` chunk payload in a RIFF header."""
+        if len(wav) < 12 or wav[:4] != b"RIFF" or wav[8:12] != b"WAVE":
+            return None
+        offset = 12
+        while offset + 8 <= len(wav):
+            chunk_id = wav[offset:offset + 4]
+            size = int.from_bytes(wav[offset + 4:offset + 8], "little")
+            if chunk_id == b"data":
+                return offset + 8
+            offset += 8 + size
+            if size % 2:
+                offset += 1
+        return None
+
     def set_outputting(self, state: bool) -> None:
         """Set whether assistant is currently outputting audio."""
         self._is_outputting = state
         if not state:
+            self._has_pcm_reference = False
+            self._pending_wav.clear()
+            self._wav_payload_start = None
             self._filter_weights = np.zeros_like(self._filter_weights)
-    
+
     def is_echo(self, pcm_int16: bytes, tolerance_ms: float = 500.0) -> bool:
         """Check if mic input is likely echo from assistant output.
-        
+
         Args:
             pcm_int16: Raw mic audio
             tolerance_ms: Time window to consider echo likely
-            
+
         Returns:
             True if likely echo
         """
-        if not self._is_outputting or not self._output_buffer:
+        if not self._is_outputting:
             return False
-        
+
         now = time.monotonic()
         time_since_output = (now - self._last_output_time) * 1000
-        
+
         if time_since_output > tolerance_ms:
             self._is_outputting = False
             return False
-        
+
+        # Without a genuine PCM reference there is nothing trustworthy to
+        # compare against — encoding like MP3 must not be interpreted as PCM.
+        if not self._has_pcm_reference or not self._output_buffer:
+            return False
+
         mic_samples = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
         
         if len(mic_samples) == 0:
@@ -122,7 +190,7 @@ class EchoCanceler:
         
         Uses spectral subtraction to suppress echo components.
         """
-        if not self._is_outputting or not self._output_buffer:
+        if not self._is_outputting or not self._has_pcm_reference or not self._output_buffer:
             return pcm_int16
         
         mic = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
@@ -170,6 +238,9 @@ class EchoCanceler:
         self._filter_weights = np.zeros_like(self._filter_weights)
         self._last_output_time = 0.0
         self._is_outputting = False
+        self._has_pcm_reference = False
+        self._pending_wav.clear()
+        self._wav_payload_start = None
 
 
 _echo_canceler: Optional[EchoCanceler] = None

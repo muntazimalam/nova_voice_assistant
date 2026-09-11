@@ -20,14 +20,14 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     )
-    gemini_model: str = "gemini-2.0-flash"  # fastest stable Flash tier; avoids alias-pool routing latency
-    gemini_fallback_models: list[str] = ["gemini-2.0-flash-lite", "gemini-1.5-flash"]
+    gemini_model: str = "gemini-3.1-flash-lite"  # fastest Flash tier (~1.5s ttft) for snappy voice replies
+    gemini_fallback_models: list[str] = ["gemini-3.6-flash", "gemini-flash-latest"]
     gemini_system_prompt: str = (
         "You are Nova, a warm, human-sounding voice assistant. Talk to the user "
         "the way Alexa or Siri does: friendly, casual, and natural, exactly as if "
         "you were speaking aloud. Use contractions (I'm, you're, it's, that's) and "
-        "short, punchy, conversational sentences that flow when read aloud. Keep "
-        "every reply brief (under 18 words) and to the point. Never use bullet "
+        "short, punchy, conversational sentences that flow when read aloud. "
+        "Answer fully and completely — never cut a reply short. Never use bullet "
         "points, lists, markdown, numbers, or filler like 'As an AI'. Just answer "
         "like a helpful friend would out loud."
     )
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     gemini_retry_initial_delay: float = 0.2
     gemini_retry_max_delay: float = 0.5
     gemini_race_fallback: bool = False  # opt-in: race primary vs first fallback; measured SLOWER on free tier (concurrency throttling)
-    llm_timeout_seconds: float = 12.0  # absolute cap on LLM streaming; fails with a clear error
+    llm_timeout_seconds: float = 15.0  # absolute cap on LLM streaming; fails with a clear error (split across model candidates)
 
     # Speech-to-Text (faster-whisper, local)
     whisper_model: str = "base"  # "tiny" is faster but drops quiet real-mic speech; "base" is far more robust
@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     sample_rate: int = 16000
     silence_timeout_ms: float = 450.0  # Instant endpointing after speech ends
     voice_debounce_frames: int = 3  # consecutive voiced chunks (~20 ms each) required before CAPTURING; rejects single noise bursts
+    barge_in_required_frames: int = 5  # consecutive voiced chunks (~20 ms each) required while SPEAKING before barge-in; rejects TTS-echo blips
+    barge_in_grace_ms: float = 600.0  # ignore barge-in for this long after a reply starts (Nova's own voice echoes into the mic)
+    barge_in_gap_ms: float = 250.0  # while TTS audio is actively flowing, ignore mic voice until this silence gap; makes self-truncation impossible
     min_command_ms: float = 250.0
     max_command_ms: float = 12000.0
     max_audio_chunk_bytes: int = 65536
@@ -74,9 +77,15 @@ class Settings(BaseSettings):
 
     # Conversation
     history_limit: int = 10
+    # Maximum output tokens per reply. The assistant can hold whatever the model
+    # reasoned through; this is just the API ceiling (0/None would disable it).
+    llm_max_output_tokens: int = 2048
+    # How long a disconnected session's history is kept for resume before it is
+    # pruned, so `session_store` cannot grow unbounded over time.
+    session_ttl_seconds: float = 3600.0
 
-    # Text-to-Speech (edge-tts free cloud; local XTTS-v2 or Piper via tts_engine)
-    tts_engine: str = "xtts"  # "xtts" | "edge" | "piper"
+    # Text-to-Speech (edge-tts free cloud; XTTS-v2 or Piper via tts_engine)
+    tts_engine: str = "edge"  # "edge" (cloud MP3, fast) | "xtts" (local, slow, human) | "piper" (local WAV)
     tts_voice: str = "en-US-JennyNeural"  # edge: warm, Siri/Alexa-like female voice
     tts_rate: str = "+4%"  # edge: calm, natural pace (avoid the rushed robotic feel)
     tts_pitch: str = "+0Hz"  # edge: slight lift sounds more engaged; try "+10Hz"

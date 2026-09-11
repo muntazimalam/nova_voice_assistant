@@ -141,13 +141,45 @@ class TestPipelineEndToEnd:
         state.speaking_started_at = state.now_ms()
 
         pcm = (np.full(320, 30000, dtype="<i2").tobytes())
+        required = max(1, main.settings.barge_in_required_frames)
 
-        await handle_audio_frame(fake_ws, pipeline, state, pcm)
+        # Even sustained voice inside the grace window must be ignored.
+        for _ in range(required):
+            await handle_audio_frame(fake_ws, pipeline, state, pcm)
         assert not state.interrupt_event.is_set(), "barge-in must be ignored inside grace window"
 
+        # After the grace window, sustained voice (and no recent TTS audio) fires.
         state.speaking_started_at = state.now_ms() - state.barge_in_grace_ms - 100
-        await handle_audio_frame(fake_ws, pipeline, state, pcm)
+        state.speaking_voice_streak = 0
+        for _ in range(required):
+            await handle_audio_frame(fake_ws, pipeline, state, pcm)
         assert state.interrupt_event.is_set(), "barge-in should fire after the grace window"
+
+    async def test_barge_in_gap_ignores_voice_while_talking(self, fake_ws, monkeypatch):
+        """Continuous echo of Nova's own voice must never self-truncate a reply."""
+        import app.main as main
+        import numpy as np
+        from app.main import handle_audio_frame
+
+        state = ConnectionState()
+        pipeline = VoicePipeline(state)
+        state.stage = "SPEAKING"
+        state.wake_buffer = main.wake_service.new_buffer()
+        state.speaking_started_at = state.now_ms() - state.barge_in_grace_ms - 100
+        # TTS audio is actively flowing (this is the "talking" window).
+        state.last_audio_sent_at = state.now_ms()
+
+        pcm = (np.full(320, 30000, dtype="<i2").tobytes())
+        for _ in range(main.settings.barge_in_required_frames * 3):
+            await handle_audio_frame(fake_ws, pipeline, state, pcm)
+        assert not state.interrupt_event.is_set(), "barge-in must not fire while TTS audio flows"
+
+        # Once audio stops and a gap elapses, sustained user voice can still interrupt.
+        state.last_audio_sent_at = state.now_ms() - state.barge_in_gap_ms - 100
+        state.speaking_voice_streak = 0
+        for _ in range(main.settings.barge_in_required_frames):
+            await handle_audio_frame(fake_ws, pipeline, state, pcm)
+        assert state.interrupt_event.is_set(), "barge-in should fire during a genuine pause"
 
     async def test_listening_debounce_requires_sustained_voice(self, fake_ws, monkeypatch):
         import app.main as main
@@ -159,7 +191,7 @@ class TestPipelineEndToEnd:
         state.stage = "LISTENING"
         state.wake_buffer = main.wake_service.new_buffer()
 
-        async def fake_feed(pcm, buffer):
+        async def fake_feed(pcm, buffer, sniff_wake=True):
             buffer.feed(pcm)
             return ""
 

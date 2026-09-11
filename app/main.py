@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -65,6 +65,12 @@ session_store: Dict[str, Dict[str, Any]] = {}
 def _init_advanced_features() -> None:
     """Initialize optional advanced audio/cache features."""
     global codec, vad, echo_canceler, llm_cache, summarizer, rate_limiter
+
+    logger.info(
+        "LLM configured: model=%s fallbacks=%s",
+        settings.gemini_model,
+        settings.gemini_fallback_models,
+    )
 
     # Opus codec
     if settings.use_opus_codec:
@@ -150,11 +156,33 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     _init_advanced_features()
     await loop.run_in_executor(None, _warmup)
+
+    async def _session_cleaner() -> None:
+        """Periodically drop abandoned session entries so memory stays bounded."""
+        while True:
+            await asyncio.sleep(300.0)
+            _prune_sessions(settings.session_ttl_seconds)
+
+    cleaner_task = asyncio.create_task(_session_cleaner())
     yield
     # Cleanup on shutdown
+    cleaner_task.cancel()
     if llm_cache:
         await llm_cache.clear()
     session_store.clear()
+
+
+def _prune_sessions(ttl_seconds: float) -> None:
+    """Remove sessions that have been idle (disconnected) past their TTL."""
+    now = time.time()
+    stale = [
+        cid for cid, data in session_store.items()
+        if now - data.get("last_seen", data.get("created_at", 0)) > ttl_seconds
+    ]
+    for cid in stale:
+        session_store.pop(cid, None)
+    if stale:
+        logger.info("Pruned %d stale session(s).", len(stale))
 
 
 # Initialize FastAPI Application
@@ -318,9 +346,12 @@ class VoicePipeline:
             audio_started = True
             await self.set_stage(ws, "SPEAKING", "Assistant responding...")
             self.state.speaking_started_at = self.state.now_ms()
-            # Register TTS output for echo cancellation
-            if echo_canceler is not None:
-                echo_canceler.set_outputting(True)
+            self.state.speaking_voice_streak = 0
+            self.state.last_audio_sent_at = None
+            # Register TTS output for echo cancellation (per-connection instance)
+            ec = self.state.echo_canceler
+            if ec is not None:
+                ec.set_outputting(True)
             await ws.send_text(json.dumps({"type": "audio_start", "encoding": tts_service.encoding}))
 
         async def llm_producer() -> None:
@@ -453,10 +484,15 @@ class VoicePipeline:
                         if t_tts_first is None:
                             t_tts_first = time.perf_counter()
                         await ws.send_bytes(chunk)
-                        # Track output for echo cancellation
-                        if echo_canceler is not None:
+                        # Track output for echo cancellation (container-aware:
+                        # WAV headers stripped; MP3 tracked by timing only)
+                        ec = state.echo_canceler
+                        if ec is not None:
                             loop = asyncio.get_running_loop()
-                            loop.call_soon(echo_canceler.register_output, chunk)
+                            loop.call_soon(ec.register_container_output, chunk, tts_service.encoding)
+                        # Remember when audio last flowed so barge-in only counts
+                        # during genuine pauses, never while Nova is speaking.
+                        state.last_audio_sent_at = state.now_ms()
                     await self.send(ws, {
                         "type": "audio_segment_end",
                         "segment_index": seg_idx,
@@ -495,9 +531,10 @@ class VoicePipeline:
             if audio_started:
                 await ws.send_text(json.dumps({"type": "audio_end", "metrics": metrics}))
             if llm_error:
+                detail = f" ({llm_error[:160]})" if llm_error else ""
                 await self.set_stage(
                     ws, "IDLE",
-                    "I encountered an error while thinking. Please check the API key and try again.",
+                    f"I encountered an error while thinking.{detail}",
                 )
             else:
                 await self.set_stage(ws, "IDLE", "No response generated.")
@@ -561,6 +598,19 @@ async def get_dashboard(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/favicon.ico", response_class=Response)
+async def get_favicon() -> Response:
+    """Silence the favicon 404 from browser health probes."""
+    return Response(
+        content=(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+            '<circle cx="8" cy="8" r="7" fill="#4f8cff"/>'
+            '<circle cx="8" cy="8" r="3" fill="#fff"/></svg>'
+        ),
+        media_type="image/svg+xml",
+    )
+
+
 @app.get("/api/health")
 async def health_check() -> JSONResponse:
     """Health check endpoint providing server status and connection metrics."""
@@ -608,17 +658,35 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     cid = await manager.connect(websocket, session_id)
     set_correlation_id(cid)
 
-    # Session resumption: restore state if client reconnects
-    if cid in session_store:
-        restored = session_store[cid]
-        state = restored.get("state")
-        if state is None:
-            state = ConnectionState()
+    # Session resumption: restore state if client reconnects (unless the old
+    # session went stale); otherwise start fresh with a working copy.
+    restored = session_store.get(cid)
+    if restored is not None:
+        last_active = restored.get("last_seen", restored.get("created_at", 0))
+        if time.time() - last_active > settings.session_ttl_seconds:
+            session_store.pop(cid, None)
+            restored = None
+    if restored is not None and restored.get("state") is not None:
+        state = restored["state"]
     else:
         state = ConnectionState()
-    session_store[cid] = {"state": state, "created_at": time.time()}
+    session_store[cid] = {"state": state, "created_at": time.time(), "last_seen": time.time()}
 
     state.wake_buffer = wake_service.new_buffer()
+    # Reset any stale state left over from a crashed / disconnected session.
+    state.busy = False
+    state.pipeline_task = None
+    state.interrupt_event.clear()
+    # Per-connection echo canceller: the module-global instance only tracks
+    # whether the feature is enabled; actual cancellation is per-client.
+    if echo_canceler is not None:
+        state.echo_canceler = EchoCanceler()
+    else:
+        state.echo_canceler = None
+    # Barge-in tuning is per-connection too, so a client can override it via
+    # config without affecting concurrent sessions.
+    state.barge_in_grace_ms = settings.barge_in_grace_ms
+    state.barge_in_gap_ms = settings.barge_in_gap_ms
     pipeline = VoicePipeline(state)
 
     # Dispatch welcome & initial state
@@ -643,6 +711,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             message = await websocket.receive()
             kind = message.get("type")
 
+            # Peer closed the socket. Bail immediately instead of calling
+            # receive() again (which raises "Cannot call receive once a
+            # disconnect message has been received") and polluting the log.
+            if kind == "websocket.disconnect":
+                raise WebSocketDisconnect(message.get("code", 1000))
+
             # Rate limiting for text/control messages
             if kind == "websocket.receive" and message.get("text") is not None:
                 if rate_limiter and not rate_limiter.allow(cid):
@@ -661,8 +735,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 pcm = message["bytes"]
                 if is_binary_frame(pcm):
                     # Echo cancellation: filter out assistant's own TTS audio
-                    if echo_canceler is not None:
-                        pcm = echo_canceler.cancel_echo(pcm)
+                    ec = state.echo_canceler
+                    if ec is not None:
+                        pcm = ec.cancel_echo(pcm)
                     await handle_audio_frame(websocket, pipeline, state, pcm)
                 continue
 
@@ -730,8 +805,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             elif msg_type == "interrupt":
                 # Barge-in: stop the current reply immediately (like Alexa/Siri).
                 state.interrupt_event.set()
-                if echo_canceler is not None:
-                    echo_canceler.set_outputting(False)
+                ec = state.echo_canceler
+                if ec is not None:
+                    ec.set_outputting(False)
                 await send_json(
                     websocket,
                     {
@@ -794,9 +870,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         watchdog.cancel()
         # Cancel any in-flight pipeline task so we don't leak it on disconnect.
         await cancel_pipeline(state)
-        if echo_canceler is not None:
-            echo_canceler.set_outputting(False)
-            echo_canceler.reset()
+        ec = state.echo_canceler
+        if ec is not None:
+            ec.set_outputting(False)
+            ec.reset()
         clear_correlation_id()
 
 
@@ -822,12 +899,13 @@ async def handle_audio_frame(
 ) -> None:
     """Route a validated binary audio chunk through the wake/capture pipeline with instant VAD."""
     now = state.now_ms()
+    ec = state.echo_canceler
 
     # Echo-aware speech detection: use Silero VAD when available, else RMS.
     # Skip speech detection entirely if this is likely assistant echo.
     is_echo = False
-    if echo_canceler is not None:
-        is_echo = echo_canceler.is_echo(pcm)
+    if ec is not None:
+        is_echo = ec.is_echo(pcm)
         if is_echo:
             logger.debug("Ignoring echo-fed mic chunk during capture.")
             return
@@ -839,22 +917,44 @@ async def handle_audio_frame(
 
     # Active speech while the assistant is talking -> barge in and stop it.
     # A short grace period after the reply starts lets Nova finish the very
-    # first syllables even if its own TTS audio echoes into the mic.
-    if state.stage == "SPEAKING" and is_voice and not is_echo:
-        if state.barge_in_grace_ms > 0 and state.speaking_started_at is not None:
-            since_speaking = now - state.speaking_started_at
-            if since_speaking < state.barge_in_grace_ms:
-                return
-        if not state.interrupt_event.is_set():
-            logger.info("Barge-in: user speech detected during assistant reply.")
-            state.interrupt_event.set()
-            if echo_canceler is not None:
-                echo_canceler.set_outputting(False)
+    # first syllables even if its own TTS audio echoes into the mic. A debounce
+    # streak is ALSO required so a lone echo/click blip doesn't cut us off.
+    if state.stage == "SPEAKING":
+        if not is_echo and is_voice:
+            if state.barge_in_grace_ms > 0 and state.speaking_started_at is not None:
+                since_speaking = now - state.speaking_started_at
+                if since_speaking < state.barge_in_grace_ms:
+                    state.speaking_voice_streak = 0
+                    return
+            # Only barge in during a genuine pause. While TTS audio is actively
+            # flowing to the client, Nova's own voice is feeding the mic and a
+            # continuous echo would otherwise count as a long user utterance and
+            # cut the reply off mid-sentence. The gap lets real inter-clause
+            # interruptions still work while making self-truncation impossible.
+            if state.barge_in_gap_ms > 0 and state.last_audio_sent_at is not None:
+                since_audio = now - state.last_audio_sent_at
+                if since_audio < state.barge_in_gap_ms:
+                    state.speaking_voice_streak = 0
+                    return
+            state.speaking_voice_streak += 1
+            if state.speaking_voice_streak >= settings.barge_in_required_frames:
+                state.speaking_voice_streak = 0
+                if not state.interrupt_event.is_set():
+                    logger.info("Barge-in: user speech detected during assistant reply.")
+                    state.interrupt_event.set()
+                    if ec is not None:
+                        ec.set_outputting(False)
+        elif not is_voice:
+            # Sustained silence resets the barge-in counter so a stray blip
+            # long after the fact can't accumulate towards an interrupt.
+            state.speaking_voice_streak = 0
 
     if state.stage == "LISTENING":
         # Keep the rolling wake buffer fresh whether or not this chunk is voiced,
         # so we can seed the command buffer with pre-roll audio when capture starts.
-        await wake_service.feed(pcm, state.wake_buffer)
+        # We are already explicitly listening — do NOT run wake confirmation, so
+        # faster-whisper stays free for the real command transcription.
+        await wake_service.feed(pcm, state.wake_buffer, sniff_wake=False)
 
         if not is_voice:
             state.voice_streak = 0

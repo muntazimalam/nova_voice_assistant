@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import uuid
 from contextvars import ContextVar
 from typing import Optional
@@ -51,12 +52,20 @@ def setup_structured_logging(
     """Configure structured logging with correlation IDs."""
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
-    
+
+    # If no handlers are configured yet (e.g. no basicConfig was called), the
+    # loop below would leave the root logger empty and Python's lastResort
+    # handler would silently DROP all INFO records. Ensure a stderr console
+    # handler always exists so INFO logs (startup, "LLM configured", metrics)
+    # actually reach the terminal.
+    if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
+        root_logger.addHandler(logging.StreamHandler(sys.stderr))
+
     for handler in root_logger.handlers:
         handler.addFilter(CorrelationFilter())
         if isinstance(handler, logging.StreamHandler) and handler.formatter is None:
             handler.setFormatter(StructuredFormatter(fmt=fmt))
-    
+
     for name in ["uvicorn", "uvicorn.error", "uvicorn.access"]:
         uv_logger = logging.getLogger(name)
         uv_logger.addFilter(CorrelationFilter())

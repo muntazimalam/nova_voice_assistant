@@ -7,37 +7,37 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   // ── DOM refs ───────────────────────────────────────────────────────────────
-  const connectionPill     = document.getElementById('connectionPill');
-  const connectionLabel    = document.getElementById('connectionLabel');
-  const latencyMetric      = document.getElementById('latencyMetric');
-  const btnReconnect       = document.getElementById('btnReconnect');
+  const connectionPill = document.getElementById('connectionPill');
+  const connectionLabel = document.getElementById('connectionLabel');
+  const latencyMetric = document.getElementById('latencyMetric');
+  const btnReconnect = document.getElementById('btnReconnect');
 
-  const sttMetric          = document.getElementById('sttMetric');
-  const llmMetric          = document.getElementById('llmMetric');
-  const ttsMetric          = document.getElementById('ttsMetric');
-  const totalMetric        = document.getElementById('totalMetric');
-  const chkFollowUp        = document.getElementById('chkFollowUp');
-  const selVoiceEngine     = document.getElementById('selVoiceEngine');
+  const sttMetric = document.getElementById('sttMetric');
+  const llmMetric = document.getElementById('llmMetric');
+  const ttsMetric = document.getElementById('ttsMetric');
+  const totalMetric = document.getElementById('totalMetric');
+  const chkFollowUp = document.getElementById('chkFollowUp');
+  const selVoiceEngine = document.getElementById('selVoiceEngine');
 
-  const orbCard            = document.querySelector('.orb-card');
-  const voiceOrb           = document.getElementById('voiceOrb');
+  const orbCard = document.querySelector('.orb-card');
+  const voiceOrb = document.getElementById('voiceOrb');
   const assistantStateChip = document.getElementById('assistantStateChip');
-  const orbStatusHeadline  = document.getElementById('orbStatusHeadline');
-  const orbStatusSub       = document.getElementById('orbStatusSub');
-  const btnVoiceTrigger    = document.getElementById('btnVoiceTrigger');
-  const micIcon            = document.getElementById('micIcon');
+  const orbStatusHeadline = document.getElementById('orbStatusHeadline');
+  const orbStatusSub = document.getElementById('orbStatusSub');
+  const btnVoiceTrigger = document.getElementById('btnVoiceTrigger');
+  const micIcon = document.getElementById('micIcon');
 
-  const btnStartListening  = document.getElementById('btnStartListening');
-  const btnSimulateTurn    = document.getElementById('btnSimulateTurn');
-  const btnPing            = document.getElementById('btnPing');
+  const btnStartListening = document.getElementById('btnStartListening');
+  const btnSimulateTurn = document.getElementById('btnSimulateTurn');
+  const btnPing = document.getElementById('btnPing');
   const txtCustomUtterance = document.getElementById('txtCustomUtterance');
-  const btnSendUtterance   = document.getElementById('btnSendUtterance');
+  const btnSendUtterance = document.getElementById('btnSendUtterance');
 
-  const terminalOutput     = document.getElementById('terminalOutput');
-  const chkAutoScroll      = document.getElementById('chkAutoScroll');
-  const btnClearLogs       = document.getElementById('btnClearLogs');
-  const logCount           = document.getElementById('logCount');
-  const filterTabs         = document.querySelectorAll('.filter-tab');
+  const terminalOutput = document.getElementById('terminalOutput');
+  const chkAutoScroll = document.getElementById('chkAutoScroll');
+  const btnClearLogs = document.getElementById('btnClearLogs');
+  const logCount = document.getElementById('logCount');
+  const filterTabs = document.querySelectorAll('.filter-tab');
 
   // ── SVG icons ──────────────────────────────────────────────────────────────
   const ICON_MIC = `
@@ -53,50 +53,42 @@ document.addEventListener('DOMContentLoaded', () => {
   `;
 
   // ── App state ──────────────────────────────────────────────────────────────
-  let socket            = null;
-  let currentState      = 'DISCONNECTED';
+  let socket = null;
+  let currentState = 'DISCONNECTED';
   let reconnectAttempts = 0;
-  const MAX_RECONNECT   = 10000; // ms cap
+  const MAX_RECONNECT = 10000; // ms cap
 
-  let totalLogs  = 0;
+  let totalLogs = 0;
   let activeFilter = 'all';
 
   // ── Audio capture state ────────────────────────────────────────────────────
-  let audioCtx        = null;   // AudioContext (created on first mic use)
-  let mediaStream     = null;   // MediaStream from getUserMedia
-  let workletNode     = null;   // AudioWorkletNode running the downsampler
+  let audioCtx = null;   // AudioContext (created on first mic use)
+  let mediaStream = null;   // MediaStream from getUserMedia
+  let workletNode = null;   // AudioWorkletNode running the downsampler
   let legacyProcessor = null;   // ScriptProcessorNode fallback (worklet unavailable)
-  let sourceNode      = null;   // MediaStreamSourceNode
-  let isMicActive     = false;
+  let sourceNode = null;   // MediaStreamSourceNode
+  let isMicActive = false;
 
   // ── High-Performance Web Audio Playback Queue (Zero-Gap Scheduled) ────────
-  let playbackCtx           = null;   // AudioContext for scheduled playback & chimes
+  let playbackCtx = null;   // AudioContext for scheduled playback & chimes
   let currentSegmentBuffers = [];     // Raw MP3 chunks for currently arriving segment
-  let activeSources         = [];     // List of scheduled AudioBufferSourceNodes
-  let nextPlayTime          = 0;       // Timeline cursor for seamless gapless playback
-  let isAudioPlaying        = false;
-  let allSegmentsReceived   = false;
-  let followUpTimer         = null;
+  let activeSources = [];     // List of scheduled AudioBufferSourceNodes
+  let nextPlayTime = 0;       // Timeline cursor for seamless gapless playback
+  let isAudioPlaying = false;
+  let allSegmentsReceived = false;
+  let followUpTimer = null;
 
   // ==========================================================================
   // AudioWorklet inline source (downsampler: browser sample rate → 16 kHz Int16)
   // ==========================================================================
 
-  /**
-   * We register a worklet processor inline via a Blob URL so we don't need an
-   * extra static file.  The processor receives float32 frames at the browser's
-   * native sample rate and downsamples to 16 kHz by averaging blocks, then
-   * converts to Int16 PCM and posts the buffer back to the main thread.
-   */
-const WORKLET_CODE = `
+  const WORKLET_CODE = `
 class DownsampleProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
     const inRate  = options.processorOptions.inputSampleRate || 44100;
     const outRate = 16000;
-    // Exact fractional ratio (e.g. 44.1k -> 2.75625, 48k -> 3, 96k -> 6).
     this._ratio = inRate / outRate;
-    // Fractional accumulator so the 16 kHz cadence is exact for non-multiple rates.
     this._phase = 0;
     this._acc   = 0;
     this._n     = 0;
@@ -113,8 +105,6 @@ class DownsampleProcessor extends AudioWorkletProcessor {
       this._phase += 1;
 
       if (this._phase >= this._ratio) {
-        // One output sample per ratio input samples (windowed average
-        // doubles as a crude anti-alias low-pass).
         out.push(this._acc / this._n);
         this._phase -= this._ratio;
         this._acc = 0;
@@ -147,11 +137,6 @@ registerProcessor('downsample-processor', DownsampleProcessor);
       return;
     }
 
-    // Create + resume the AudioContext SYNCHRONOUSLY (before any await): the
-    // browser only runs it "live" when the constructor call and resume() happen
-    // inside the user gesture (the button click). If we awaited getUserMedia
-    // first, Chrome starts the context suspended and resume() can hang forever,
-    // leaving the worklet silent — the classic "mic does nothing" failure.
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     try {
       if (audioCtx.state === 'suspended') {
@@ -160,70 +145,57 @@ registerProcessor('downsample-processor', DownsampleProcessor);
     } catch (err) {
       logTerminal('error', `AudioContext could not resume (${err.message}); capture may stay silent.`, 'system');
     }
-    logTerminal('system', `AudioContext state: ${audioCtx.state} (${audioCtx.sampleRate} Hz)`, 'system');
 
-    logTerminal('system', 'Requesting microphone access...', 'system');
     try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
     } catch (err) {
-      logTerminal('error', `Microphone access denied: ${err.message}`, 'system');
-      return;
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      } catch (err2) {
+        logTerminal('error', `Microphone access denied: ${err2.message}`, 'system');
+        return;
+      }
     }
-    logTerminal('system', 'Microphone granted.', 'system');
 
-    // Register the downsampler worklet via Blob URL (no extra static file needed)
     let blobUrl = null;
     try {
-      const blob    = new Blob([WORKLET_CODE], { type: 'application/javascript' });
-      blobUrl        = URL.createObjectURL(blob);
+      const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+      blobUrl = URL.createObjectURL(blob);
       await audioCtx.audioWorklet.addModule(blobUrl);
       URL.revokeObjectURL(blobUrl);
     } catch (err) {
-      logTerminal('error', `AudioWorklet failed to load (${err.message}); falling back to ScriptProcessorNode.`, 'system');
       startLegacyCapture();
       return;
     }
-    logTerminal('system', 'AudioWorklet registered.', 'system');
 
     try {
-      sourceNode  = audioCtx.createMediaStreamSource(mediaStream);
+      sourceNode = audioCtx.createMediaStreamSource(mediaStream);
       workletNode = new AudioWorkletNode(audioCtx, 'downsample-processor', {
         processorOptions: { inputSampleRate: audioCtx.sampleRate },
       });
 
-      // Collect Int16 samples into 320-sample chunks (20 ms at 16 kHz = 640 bytes),
-      // then push each frame to the server. Shared by the worklet path.
       const pushPcm = buildPcmFrameSender();
       workletNode.port.onmessage = (ev) => {
-        // The worklet posts an Int16Array (or falls back to a single sample).
         const payload = ev.data;
-        const values  = (payload && typeof payload.length === 'number') ? Array.from(payload) : [payload];
+        const values = (payload && typeof payload.length === 'number') ? Array.from(payload) : [payload];
         pushPcm(values);
       };
 
       sourceNode.connect(workletNode);
-      // Do NOT connect workletNode to audioCtx.destination — we don't want echo.
-
       isMicActive = true;
       playChime('wake');
-      logTerminal('system', `Mic capture started (native ${audioCtx.sampleRate} Hz → 16 kHz PCM Int16, 20 ms frames).`, 'system');
-
-      // Tell the server we're now sending audio
       sendWebSocketPayload({ type: 'audio_start' });
     } catch (err) {
-      logTerminal('error', `Mic node setup failed (${err.message}); falling back to ScriptProcessorNode.`, 'system');
-      try { if (sourceNode) sourceNode.disconnect(); } catch (_) {}
+      try { if (sourceNode) sourceNode.disconnect(); } catch (_) { }
       sourceNode = null;
       startLegacyCapture();
       return;
     }
   }
 
-  /**
-   * Returns a push(values) accumulator that batches Int16 samples into
-   * 320-sample (640-byte) frames and streams them over WebSocket. Logs the
-   * first frame so the dashboard terminal proves mic bytes are flowing.
-   */
   function buildPcmFrameSender() {
     const CHUNK_SAMPLES = 320;
     const pendingSamples = new Int16Array(CHUNK_SAMPLES);
@@ -241,25 +213,17 @@ registerProcessor('downsample-processor', DownsampleProcessor);
             firstFrameSent = true;
             logTerminal('system', 'First PCM frame sent to server — mic bytes are flowing.', 'system');
           }
-        } else {
-          logTerminal('system', 'Mic active but WebSocket not open; dropping frame.', 'system');
         }
         pendingIdx = 0;
       }
     };
   }
 
-  /**
-   * Fallback when AudioWorklet (blob URL) is unavailable. ScriptProcessorNode
-   * is deprecated but supported everywhere; we downsample inline the same way
-   * and push the same 640-byte Int16 frames.
-   */
   async function startLegacyCapture() {
     try {
       const CHUNK_SAMPLES = 320;
       const ratio = audioCtx.sampleRate / 16000;
       const grab = audioCtx.createScriptProcessor(4096, 1, 1);
-      // Rolling fractional downsampler state.
       let phase = 0, acc = 0, n = 0;
       const pushPcm = buildPcmFrameSender();
 
@@ -279,8 +243,6 @@ registerProcessor('downsample-processor', DownsampleProcessor);
 
       sourceNode = audioCtx.createMediaStreamSource(mediaStream);
       sourceNode.connect(grab);
-      // ScriptProcessor only fires while connected to a graph; route to a
-      // muted gain so we don't echo the mic back through the speakers.
       const mute = audioCtx.createGain();
       mute.gain.value = 0;
       grab.connect(mute);
@@ -289,10 +251,8 @@ registerProcessor('downsample-processor', DownsampleProcessor);
 
       isMicActive = true;
       playChime('wake');
-      logTerminal('system', `Mic capture started via ScriptProcessorNode fallback (${audioCtx.sampleRate} Hz → 16 kHz PCM).`, 'system');
       sendWebSocketPayload({ type: 'audio_start' });
     } catch (err) {
-      logTerminal('error', `Microphone capture failed entirely: ${err.message}`, 'system');
       stopMicCapture(false);
     }
   }
@@ -302,13 +262,12 @@ registerProcessor('downsample-processor', DownsampleProcessor);
     if (!isMicActive) return;
 
     if (legacyProcessor) { legacyProcessor.disconnect(); legacyProcessor = null; }
-    if (workletNode)  { workletNode.disconnect(); workletNode = null; }
-    if (sourceNode)   { sourceNode.disconnect();  sourceNode = null; }
-    if (mediaStream)  { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
-    if (audioCtx)     { audioCtx.close(); audioCtx = null; }
+    if (workletNode) { workletNode.disconnect(); workletNode = null; }
+    if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
 
     isMicActive = false;
-    logTerminal('system', 'Mic capture stopped.', 'system');
 
     if (notifyServer && socket && socket.readyState === WebSocket.OPEN) {
       sendWebSocketPayload({ type: 'audio_end' });
@@ -338,7 +297,6 @@ registerProcessor('downsample-processor', DownsampleProcessor);
       osc.type = 'sine';
 
       if (type === 'wake') {
-        // High-tech two-tone Siri/Alexa chime (F#5 740Hz -> A5 880Hz)
         osc.frequency.setValueAtTime(740, now);
         osc.frequency.exponentialRampToValueAtTime(880, now + 0.08);
         gain.gain.setValueAtTime(0.001, now);
@@ -366,7 +324,7 @@ registerProcessor('downsample-processor', DownsampleProcessor);
 
   function stopAudioPlayback() {
     for (const s of activeSources) {
-      try { s.stop(); } catch (_) {}
+      try { s.stop(); } catch (_) { }
     }
     activeSources = [];
     nextPlayTime = 0;
@@ -389,7 +347,6 @@ registerProcessor('downsample-processor', DownsampleProcessor);
     }
     currentSegmentBuffers = [];
 
-    // If in Instant Local mode, skip playing cloud audio chunks
     if (selVoiceEngine && selVoiceEngine.value === 'instant') {
       return;
     }
@@ -408,9 +365,6 @@ registerProcessor('downsample-processor', DownsampleProcessor);
       activeSources.push(source);
       isAudioPlaying = true;
 
-      const durMs = Math.round(audioBuffer.duration * 1000);
-      logTerminal('system', `Pipelined audio clause #${segmentIndex} ready (${durMs}ms). Gapless playback scheduled at +${Math.round((startTime - now)*1000)}ms.`, 'system');
-
       source.onended = () => {
         const idx = activeSources.indexOf(source);
         if (idx !== -1) activeSources.splice(idx, 1);
@@ -426,9 +380,7 @@ registerProcessor('downsample-processor', DownsampleProcessor);
 
   function onResponsePlaybackFinished() {
     isAudioPlaying = false;
-    // Check if hands-free follow-up mode is enabled
     if (chkFollowUp && chkFollowUp.checked && !isMicActive) {
-      logTerminal('system', 'Follow-Up Mode: Listening for next conversational turn…', 'system');
       triggerFollowUpListening();
     }
   }
@@ -437,12 +389,10 @@ registerProcessor('downsample-processor', DownsampleProcessor);
     clearTimeout(followUpTimer);
     sendWebSocketPayload({ type: 'start_listening' });
     startMicCapture();
-    // Auto-close follow-up after 5 seconds if no speech detected
     followUpTimer = setTimeout(() => {
       if (currentState === 'LISTENING') {
         stopMicCapture();
         sendWebSocketPayload({ type: 'stop_listening' });
-        logTerminal('system', 'Follow-up listening window closed.', 'system');
       }
     }, 5000);
   }
@@ -451,9 +401,6 @@ registerProcessor('downsample-processor', DownsampleProcessor);
     if (!('speechSynthesis' in window)) return;
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.15;
-    const voices = window.speechSynthesis.getVoices();
-    const enVoice = voices.find(v => v.name.includes('Natural') || v.name.includes('Samantha') || v.lang.startsWith('en'));
-    if (enVoice) u.voice = enVoice;
     window.speechSynthesis.speak(u);
   }
 
@@ -466,7 +413,6 @@ registerProcessor('downsample-processor', DownsampleProcessor);
       totalMetric.textContent = `${metrics.total_roundtrip_ms} ms`;
       latencyMetric.textContent = `${metrics.total_roundtrip_ms} ms`;
     }
-    logTerminal('system', `Telemetry: STT ${metrics.stt_ms || 0}ms | LLM TTFT ${metrics.llm_ttft_ms || 0}ms | TTS ${metrics.tts_first_ms || 0}ms | Total Roundtrip: ${metrics.total_roundtrip_ms || 0}ms`, 'system');
   }
 
   // ==========================================================================
@@ -475,20 +421,15 @@ registerProcessor('downsample-processor', DownsampleProcessor);
 
   function initWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Session ID for connection resumption — reconnecting mid-conversation
-    // restores the same conversation history instead of starting fresh.
     const storedSession = localStorage.getItem('nova_session_id') || '';
-    const wsUrl    = `${protocol}//${window.location.host}/ws${storedSession ? '?session=' + storedSession : ''}`;
+    const wsUrl = `${protocol}//${window.location.host}/ws${storedSession ? '?session=' + storedSession : ''}`;
 
     updateConnectionStatus('connecting', 'Connecting…');
-    logTerminal('system', `Connecting to WebSocket: ${wsUrl}`);
 
     try {
       socket = new WebSocket(wsUrl);
-      // Tell the browser we want to receive binary data as ArrayBuffers (not Blobs)
       socket.binaryType = 'arraybuffer';
     } catch (err) {
-      logTerminal('error', `WebSocket constructor failed: ${err.message}`);
       scheduleReconnect();
       return;
     }
@@ -499,31 +440,26 @@ registerProcessor('downsample-processor', DownsampleProcessor);
       setAssistantState('IDLE');
       const wsEndpoint = document.getElementById('wsEndpoint');
       if (wsEndpoint) wsEndpoint.textContent = wsUrl;
-      logTerminal('system', 'WebSocket established (HTTP 101 Switching Protocols)');
       sendPing();
     };
 
     socket.onmessage = (event) => {
-      // ── Binary frame: MP3 audio chunk for current segment ───────────────────
       if (event.data instanceof ArrayBuffer) {
         currentSegmentBuffers.push(event.data);
         return;
       }
-
-      // ── Text frame: JSON control message ──────────────────────────────────
       try {
         const data = JSON.parse(event.data);
         handleIncomingMessage(data);
       } catch (e) {
-        logTerminal('ws-recv', `Raw (non-JSON): ${event.data}`, 'ws');
+        logTerminal('ws-recv', `Raw: ${event.data}`, 'ws');
       }
     };
 
     socket.onclose = (event) => {
       updateConnectionStatus('disconnected', 'Disconnected');
       setAssistantState('DISCONNECTED');
-      stopMicCapture(false); // mic cleanup on disconnect, don't send audio_end
-      logTerminal('system', `WebSocket closed (code: ${event.code})`);
+      stopMicCapture(false);
       scheduleReconnect();
     };
 
@@ -535,17 +471,12 @@ registerProcessor('downsample-processor', DownsampleProcessor);
   function scheduleReconnect() {
     reconnectAttempts++;
     const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), MAX_RECONNECT);
-    logTerminal('system', `Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${reconnectAttempts})…`);
     setTimeout(initWebSocket, delay);
   }
 
   function sendWebSocketPayload(payload) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      logTerminal('error', 'Cannot send: WebSocket not open', 'system');
-      return false;
-    }
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
     socket.send(JSON.stringify(payload));
-    logTerminal('ws-send', `Sent: ${payload.type} frame`, 'ws');
     return true;
   }
 
@@ -564,7 +495,6 @@ registerProcessor('downsample-processor', DownsampleProcessor);
       if (data.client_timestamp) {
         const rtt = Date.now() - data.client_timestamp;
         latencyMetric.textContent = `${rtt} ms`;
-        logTerminal('ws-recv', `Pong received (RTT: ${rtt}ms)`, 'ws');
       }
       return;
     }
@@ -577,13 +507,11 @@ registerProcessor('downsample-processor', DownsampleProcessor);
         playChime('thinking');
       }
       setAssistantState(targetState, data.message);
-      logTerminal('state', `Assistant state → [${targetState}]: ${data.message || ''}`, 'state');
       return;
     }
 
     if (msgType === 'system_event') {
       logTerminal('system', `${data.message}${data.details ? ' (' + data.details + ')' : ''}`, 'system');
-      // Extract session ID for connection resumption
       const sessionMatch = data.message && data.message.match(/Session: ([a-f0-9]+)/i);
       if (sessionMatch) {
         localStorage.setItem('nova_session_id', sessionMatch[1]);
@@ -592,26 +520,22 @@ registerProcessor('downsample-processor', DownsampleProcessor);
     }
 
     if (msgType === 'transcript_final') {
-      logTerminal('ws-recv', `Speech recognized: "${data.content}" (${data.stt_ms || 0} ms)`, 'ws');
       if (sttMetric && data.stt_ms !== undefined) sttMetric.textContent = `${data.stt_ms} ms`;
       return;
     }
 
     if (msgType === 'chat_reply') {
-      logTerminal('ws-recv', `Reply: ${data.content}`, 'ws');
       if (data.metrics) updateTelemetryHUD(data.metrics);
       return;
     }
 
     if (msgType === 'transcript_partial') {
-      logTerminal('ws-recv', `Speech Token: ${data.content}`, 'ws');
       if (selVoiceEngine && selVoiceEngine.value === 'instant') {
         speakLocal(data.content);
       }
       return;
     }
 
-    // ── Audio stream control frames ──────────────────────────────────────────
     if (msgType === 'audio_start') {
       stopAudioPlayback();
       allSegmentsReceived = false;
@@ -631,23 +555,15 @@ registerProcessor('downsample-processor', DownsampleProcessor);
 
     if (msgType === 'audio_end') {
       allSegmentsReceived = true;
-      if (data.metrics) {
-        updateTelemetryHUD(data.metrics);
-      }
-      if (activeSources.length === 0) {
-        onResponsePlaybackFinished();
-      }
+      if (data.metrics) updateTelemetryHUD(data.metrics);
+      if (activeSources.length === 0) onResponsePlaybackFinished();
       return;
     }
 
     if (msgType === 'pipeline_metrics') {
-      if (data.metrics) {
-        updateTelemetryHUD(data.metrics);
-      }
+      if (data.metrics) updateTelemetryHUD(data.metrics);
       return;
     }
-
-    logTerminal('ws-recv', `Frame: ${JSON.stringify(data)}`, 'ws');
   }
 
   // ==========================================================================
@@ -667,9 +583,9 @@ registerProcessor('downsample-processor', DownsampleProcessor);
       case 'IDLE':
         orbCard.classList.add('state-idle');
         assistantStateChip.textContent = 'STANDBY';
-        orbStatusHeadline.textContent  = 'Assistant Ready';
-        orbStatusSub.textContent       = message || 'Tap microphone or send a prompt to begin.';
-        btnStartListening.innerHTML    = `
+        orbStatusHeadline.textContent = 'Assistant Ready';
+        orbStatusSub.textContent = message || 'Tap microphone or send a prompt to begin.';
+        btnStartListening.innerHTML = `
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg">
             <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
           </svg> Start Listening`;
@@ -679,9 +595,9 @@ registerProcessor('downsample-processor', DownsampleProcessor);
       case 'LISTENING':
         orbCard.classList.add('state-listening');
         assistantStateChip.textContent = 'LISTENING';
-        orbStatusHeadline.textContent  = 'Listening…';
-        orbStatusSub.textContent       = message || 'Capturing microphone in real-time.';
-        btnStartListening.innerHTML    = `
+        orbStatusHeadline.textContent = 'Listening…';
+        orbStatusSub.textContent = message || 'Capturing microphone in real-time.';
+        btnStartListening.innerHTML = `
           <svg viewBox="0 0 24 24" fill="currentColor" class="btn-svg">
             <rect x="6" y="6" width="12" height="12" rx="2"/>
           </svg> Stop Listening`;
@@ -691,24 +607,24 @@ registerProcessor('downsample-processor', DownsampleProcessor);
       case 'CAPTURING':
         orbCard.classList.add('state-listening');
         assistantStateChip.textContent = 'CAPTURING';
-        orbStatusHeadline.textContent  = 'Capturing Command…';
-        orbStatusSub.textContent       = message || 'Recording your command.';
+        orbStatusHeadline.textContent = 'Capturing Command…';
+        orbStatusSub.textContent = message || 'Recording your command.';
         micIcon.innerHTML = ICON_STOP;
         break;
 
       case 'PROCESSING':
         orbCard.classList.add('state-processing');
         assistantStateChip.textContent = 'PROCESSING';
-        orbStatusHeadline.textContent  = 'Thinking…';
-        orbStatusSub.textContent       = message || 'STT + LLM inference underway.';
+        orbStatusHeadline.textContent = 'Thinking…';
+        orbStatusSub.textContent = message || 'STT + LLM inference underway.';
         micIcon.innerHTML = ICON_SPINNER;
         break;
 
       case 'SPEAKING':
         orbCard.classList.add('state-speaking');
         assistantStateChip.textContent = 'SPEAKING';
-        orbStatusHeadline.textContent  = 'Assistant Responding';
-        orbStatusSub.textContent       = message || 'Streaming synthesized audio.';
+        orbStatusHeadline.textContent = 'Assistant Responding';
+        orbStatusSub.textContent = message || 'Streaming synthesized audio.';
         micIcon.innerHTML = ICON_MIC;
         break;
 
@@ -716,9 +632,9 @@ registerProcessor('downsample-processor', DownsampleProcessor);
       default:
         orbCard.classList.add('state-disconnected');
         assistantStateChip.textContent = 'OFFLINE';
-        orbStatusHeadline.textContent  = 'Engine Disconnected';
-        orbStatusSub.textContent       = 'Awaiting WebSocket reconnection…';
-        latencyMetric.textContent      = '-- ms';
+        orbStatusHeadline.textContent = 'Engine Disconnected';
+        orbStatusSub.textContent = 'Awaiting WebSocket reconnection…';
+        latencyMetric.textContent = '-- ms';
         micIcon.innerHTML = ICON_MIC;
         break;
     }
@@ -732,17 +648,17 @@ registerProcessor('downsample-processor', DownsampleProcessor);
     totalLogs++;
     logCount.textContent = `${totalLogs} event${totalLogs === 1 ? '' : 's'} logged`;
 
-    const row       = document.createElement('div');
-    row.className   = 'terminal-line';
+    const row = document.createElement('div');
+    row.className = 'terminal-line';
     row.dataset.category = category;
 
     const timeStr = new Date().toTimeString().split(' ')[0];
 
     const TAG_MAP = {
-      'ws-recv' : ['tag-ws-recv', 'WS RECV'],
-      'ws-send' : ['tag-ws-send', 'WS SENT'],
-      'state'   : ['tag-state',   'STATE'],
-      'error'   : ['tag-error',   'ERROR'],
+      'ws-recv': ['tag-ws-recv', 'WS RECV'],
+      'ws-send': ['tag-ws-send', 'WS SENT'],
+      'state': ['tag-state', 'STATE'],
+      'error': ['tag-error', 'ERROR'],
     };
     const [tagClass, tagLabel] = TAG_MAP[type] || ['tag-system', 'SYS'];
 
@@ -823,6 +739,17 @@ registerProcessor('downsample-processor', DownsampleProcessor);
     if (e.key === 'Enter') submitUtterance();
   });
 
+  // Quick Action Chips Functionality Integration
+  document.querySelectorAll('.action-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const cmd = chip.getAttribute('data-command');
+      if (txtCustomUtterance) {
+        txtCustomUtterance.value = cmd;
+        submitUtterance();
+      }
+    });
+  });
+
   btnClearLogs.addEventListener('click', () => {
     terminalOutput.innerHTML = '';
     totalLogs = 0;
@@ -844,11 +771,9 @@ registerProcessor('downsample-processor', DownsampleProcessor);
     });
   });
 
-  // Heartbeat ping every 15 seconds
   setInterval(() => {
     if (socket && socket.readyState === WebSocket.OPEN) sendPing();
   }, 15000);
 
-  // ── Boot ───────────────────────────────────────────────────────────────────
   initWebSocket();
 });

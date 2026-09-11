@@ -200,7 +200,7 @@ class LLMService:
         config = types.GenerateContentConfig(
             system_instruction=self._settings.gemini_system_prompt,
             temperature=0.6,
-            max_output_tokens=150,
+            max_output_tokens=self._settings.llm_max_output_tokens,
         )
         contents = self._translate(messages)
         history = contents[:-1]
@@ -211,27 +211,57 @@ class LLMService:
 
         candidates = self._candidate_models()
 
+        # Each model gets its OWN time budget (split of llm_timeout_seconds).
+        # Wrapping the whole loop in one timeout starved the fallbacks: a slow
+        # primary consumed the entire budget, so the fast fallback never got to
+        # answer. Now a throttled primary yields to the next candidate. The
+        # primary gets a bigger slice (~2x a fallback) so it normally wins.
+        total_deadline = (asyncio.get_running_loop().time() +
+                          self._settings.llm_timeout_seconds)
+        num_candidates = max(1, len(candidates))
+        weights = [2.0] + [1.0] * (num_candidates - 1)
+        base_unit = self._settings.llm_timeout_seconds / sum(weights)
+
         last_err = None
-        async with asyncio.timeout(self._settings.llm_timeout_seconds):
-            if self._settings.gemini_race_fallback and len(candidates) >= 2:
+        if self._settings.gemini_race_fallback and len(candidates) >= 2:
+            async with asyncio.timeout(self._settings.llm_timeout_seconds):
                 async for text in self._stream_raced(client, config, history, final_text, candidates):
                     yield text
-                return
+            return
 
-            for model_name in candidates:
-                tokens_yielded = False
-                try:
+        for i, model_name in enumerate(candidates):
+            remaining = total_deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            # Last candidate may use whatever remains of the overall budget.
+            budget = remaining if i == num_candidates - 1 else min(base_unit * weights[i], remaining)
+            tokens_yielded = False
+            try:
+                async with asyncio.timeout(budget):
                     async for text in self._stream_model(client, model_name, config, history, final_text):
                         tokens_yielded = True
                         yield text
-                    return
-                except Exception as exc:
-                    last_err = exc
-                    if tokens_yielded:
-                        logger.error("LLM stream broke mid-generation on %s: %s", model_name, exc)
-                        raise
-                    logger.warning("LLM model %s failed before tokens (%s); trying fallback...", model_name, exc)
-                    continue
+                return
+            except TimeoutError:
+                if tokens_yielded:
+                    # Tokens already reached the user; switching models now would
+                    # splice two replies together. Surface the failure instead.
+                    logger.error("LLM stream timed out mid-generation on %s.", model_name)
+                    raise
+                last_err = TimeoutError(
+                    f"{model_name} timed out after {budget:.1f}s"
+                )
+                logger.warning(
+                    "LLM model %s timed out after %.1fs; trying fallback...", model_name, budget,
+                )
+                continue
+            except Exception as exc:
+                last_err = exc
+                if tokens_yielded:
+                    logger.error("LLM stream broke mid-generation on %s: %s", model_name, exc)
+                    raise
+                logger.warning("LLM model %s failed before tokens (%s); trying fallback...", model_name, exc)
+                continue
 
         if last_err:
             raise last_err

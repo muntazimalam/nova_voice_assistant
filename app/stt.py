@@ -85,8 +85,20 @@ class SpeechToText:
             return 0.0
         return float(np.sqrt(np.mean(np.square(samples))))
 
-    def transcribe(self, pcm: bytes, initial_prompt: Optional[str] = None) -> str:
-        """Transcribe raw 16kHz Int16 PCM, returning trimmed text with minimal latency."""
+    def transcribe(
+        self,
+        pcm: bytes,
+        initial_prompt: Optional[str] = None,
+        vad_filter: bool = True,
+    ) -> str:
+        """Transcribe raw 16kHz Int16 PCM, returning trimmed text with minimal latency.
+
+        ``vad_filter`` enables faster-whisper's internal VAD, which trims silence
+        from the audio before transcription. That is desirable for long command
+        recordings but NEVER for wake-word confirmation: a short phrase buried in
+        a mostly-silent rolling buffer gets deleted as "non-speech" and the wake
+        never fires.
+        """
         if not pcm or len(pcm) < 2:
             return ""
         audio = self._pcm_to_float32(pcm)
@@ -99,7 +111,7 @@ class SpeechToText:
             beam_size=1,
             best_of=1,
             temperature=0.0,
-            vad_filter=True,
+            vad_filter=vad_filter,
             vad_parameters={"min_silence_duration_ms": 250},
             without_timestamps=True,
             condition_on_previous_text=False,

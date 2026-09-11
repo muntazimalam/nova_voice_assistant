@@ -115,7 +115,9 @@ class WakeDetector:
             return False
 
     # ------------------------------------------------------------------- feed
-    async def feed(self, pcm: bytes, buffer: RollingAudioBuffer) -> str:
+    async def feed(
+        self, pcm: bytes, buffer: RollingAudioBuffer, sniff_wake: bool = True
+    ) -> str:
         """Feed a streamed audio chunk into the given per-connection buffer.
 
         Parameters
@@ -125,6 +127,12 @@ class WakeDetector:
         buffer
             The connection's own rolling wake buffer (never shared across
             clients) — this keeps multi-connection audio from mixing together.
+        sniff_wake
+            When ``False`` the audio is only appended to the rolling buffer for
+            later pre-roll — no Whisper/openwakeword confirmation runs. Use this
+            while the user is already explicitly LISTENING so STT stays free for
+            the actual command transcription instead of re-sniffing for a wake
+            phrase we no longer need.
 
         Returns
         -------
@@ -136,6 +144,8 @@ class WakeDetector:
             Silence / below RMS threshold, or openwakeword gate not triggered.
         """
         buffer.feed(pcm)
+        if not sniff_wake:
+            return ""
 
         if self._rms(pcm) < self._settings.wake_rms_threshold:
             return ""
@@ -189,7 +199,11 @@ class WakeDetector:
     async def _confirm(self, buffer: RollingAudioBuffer) -> bool:
         """Whisper-confirm the wake phrase against the given rolling window."""
         async with self._lock:
-            audio = bytes(buffer) if buffer else b""
+            # Transcribe only the most recent slice of the window. The phrase
+            # "hey nova / nova" is what just happened; transcribing all 3 s is
+            # slower without helping accuracy. 2 s comfortably catches the
+            # phrase plus a beat of preceding audio.
+            audio = buffer.tail(2000.0) if buffer else b""
             if not audio:
                 return False
             loop = asyncio.get_running_loop()
@@ -198,8 +212,11 @@ class WakeDetector:
                 # a concurrent transcription holds it.
                 async with asyncio.timeout(5.0):
                     async with self._stt.lock:
+                        # NOT vad_filter: faster-whisper's internal VAD trims
+                        # "non-speech" from mostly-silent buffers, deleting the
+                        # short wake phrase and breaking confirmation.
                         text = await loop.run_in_executor(
-                            None, self._stt.transcribe, audio, None
+                            None, self._stt.transcribe, audio, None, False
                         )
             except TimeoutError:
                 logger.warning("Wake confirm timed out waiting for STT lock.")

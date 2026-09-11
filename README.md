@@ -6,7 +6,7 @@ clause-streamed synthesized speech back over the same socket — so the assistan
 starts talking while the LLM is still finishing its reply.
 
 ```
-version: 2.1.0  (see app/__init__.py — single source of truth)
+version: 2.3.0  (see app/__init__.py — single source of truth)
 ```
 
 ---

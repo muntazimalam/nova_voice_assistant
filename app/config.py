@@ -1,0 +1,97 @@
+"""Application settings loaded from environment variables (.env)."""
+from functools import lru_cache
+
+from pydantic import Field
+from pydantic.aliases import AliasChoices
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # General
+    app_name: str = "Nova AI Voice Assistant"
+
+    # Google Gemini
+    # Accept GEMINI_API_KEY (preferred) or GOOGLE_API_KEY (Google SDK convention)
+    gemini_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    )
+    gemini_model: str = "gemini-3.5-flash-lite"  # fastest stable Flash tier; avoids alias-pool routing latency
+    gemini_fallback_models: list[str] = ["gemini-3.1-flash-lite", "gemini-3.5-flash"]
+    gemini_system_prompt: str = (
+        "You are Nova, a warm, human-sounding voice assistant. Talk to the user "
+        "the way Alexa or Siri does: friendly, casual, and natural, exactly as if "
+        "you were speaking aloud. Use contractions (I'm, you're, it's, that's) and "
+        "short, punchy, conversational sentences that flow when read aloud. Keep "
+        "every reply brief (under 18 words) and to the point. Never use bullet "
+        "points, lists, markdown, numbers, or filler like 'As an AI'. Just answer "
+        "like a helpful friend would out loud."
+    )
+
+    # LLM latency guards. The google-genai SDK's DEFAULT retry behavior (5 attempts,
+    # exponential backoff up to 60 s) silently turns one transient 429/5xx into a
+    # ~15 s stall before the first token — exactly what the old config produced.
+    gemini_http_timeout_ms: int = 10000  # per-request HTTP timeout (milliseconds)
+    gemini_retry_attempts: int = 2  # original + 1 fast retry (1 or 0 = no retries)
+    gemini_retry_initial_delay: float = 0.2
+    gemini_retry_max_delay: float = 0.5
+    gemini_race_fallback: bool = False  # opt-in: race primary vs first fallback; measured SLOWER on free tier (concurrency throttling)
+    llm_timeout_seconds: float = 12.0  # absolute cap on LLM streaming; fails with a clear error
+
+    # Speech-to-Text (faster-whisper, local)
+    whisper_model: str = "base"  # "tiny" is faster but drops quiet real-mic speech; "base" is far more robust
+    whisper_device: str = "auto"
+    whisper_compute_type: str = "int8"
+    whisper_language: str = "en"
+    whisper_normalize: bool = True  # peak-normalize captured audio so quiet mics still transcribe
+
+    # Wake word
+    assistant_name: str = "nova"
+    wake_phrases: list[str] = ["hey nova", "nova"]
+    wake_strategy: str = "auto"  # "whisper" | "openwakeword" | "auto"
+    wake_rms_threshold: float = 250.0  # min RMS (16-bit int) to consider speech active
+    wake_sniff_interval_ms: float = 500.0
+    wake_window_millis: float = 3000.0
+    wake_tail_millis: float = 800.0  # audio to seed command buffer after wake
+
+    # Command capture & VAD endpointing
+    sample_rate: int = 16000
+    silence_timeout_ms: float = 450.0  # Instant endpointing after speech ends
+    voice_debounce_frames: int = 3  # consecutive voiced chunks (~20 ms each) required before CAPTURING; rejects single noise bursts
+    min_command_ms: float = 250.0
+    max_command_ms: float = 12000.0
+    max_audio_chunk_bytes: int = 65536
+
+    # Speech-to-Text runtime guard (seconds)
+    stt_timeout_seconds: float = 15.0
+
+    # CORS: comma-separated allowlist (no wildcard with credentials)
+    cors_origins: str = "http://127.0.0.1:8000,http://localhost:8000"
+
+    # Conversation
+    history_limit: int = 10
+
+    # Text-to-Speech (edge-tts free cloud; local XTTS-v2 or Piper via tts_engine)
+    tts_engine: str = "xtts"  # "xtts" | "edge" | "piper"
+    tts_voice: str = "en-US-JennyNeural"  # edge: warm, Siri/Alexa-like female voice
+    tts_rate: str = "+4%"  # edge: calm, natural pace (avoid the rushed robotic feel)
+    tts_pitch: str = "+0Hz"  # edge: slight lift sounds more engaged; try "+10Hz"
+    tts_volume: str = "+0%"
+    # XTTS-v2 (local neural, most human) — very slow on CPU; first run downloads ~1.6 GB
+    tts_xtts_speaker: str = "Daisy Studious"  # bundled reference voice
+    tts_xtts_language: str = "en"
+    piper_model_path: str = "models/piper/en_US-lessac-medium.onnx"
+    piper_config_path: str = "models/piper/en_US-lessac-medium.onnx.json"
+
+    # OpenWakeWord (optional)
+    ow_model_dir: str = "models/wake"
+
+
+def get_settings() -> Settings:
+    return Settings()

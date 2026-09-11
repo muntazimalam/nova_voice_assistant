@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ app_name }} - {{ phase }}</title>
+  <meta name="description" content="AI Voice Assistant Core Environment & Interactive Real-Time Dashboard powered by FastAPI and WebSockets.">
+  
+  <!-- Fonts: Outfit (UI) & JetBrains Mono (Terminal Logs) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Main Stylesheet -->
+  <link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}">
+</head>
+<body class="theme-dark">
+  <div class="ambient-glow ambient-glow-1"></div>
+  <div class="ambient-glow ambient-glow-2"></div>
+
+  <div class="dashboard-wrapper">
+    <!-- Navigation / Header -->
+    <header class="app-header">
+      <div class="brand-group">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" x2="12" y1="19" y2="22"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1 class="brand-title">NOVA <span class="badge-phase">REAL-TIME AGENT</span></h1>
+          <p class="brand-subtitle">Ultra-Low Latency Voice Agent • Alexa &amp; Siri Architecture</p>
+        </div>
+      </div>
+
+      <div class="system-status-cluster">
+        <div class="status-indicator-pill" id="connectionPill">
+          <span class="status-dot" id="connectionDot"></span>
+          <span class="status-text" id="connectionLabel">Connecting...</span>
+        </div>
+        <div class="metric-pill" title="WebSocket Round-trip Latency">
+          <span class="metric-icon">⚡</span>
+          <span id="latencyMetric">-- ms</span>
+        </div>
+        <button id="btnReconnect" class="btn-icon" title="Reconnect WebSocket">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Real-Time Voice Latency Telemetry HUD -->
+    <section class="latency-hud-bar" aria-label="Real-Time Latency Telemetry">
+      <div class="latency-hud-item">
+        <span class="hud-label">VOICE ENDPOINT &amp; STT</span>
+        <span class="hud-value" id="sttMetric">-- ms</span>
+        <span class="hud-sub">Whisper Tiny (int8)</span>
+      </div>
+      <div class="latency-hud-item">
+        <span class="hud-label">LLM FIRST TOKEN</span>
+        <span class="hud-value" id="llmMetric">-- ms</span>
+        <span class="hud-sub">Gemini Flash-Lite</span>
+      </div>
+      <div class="latency-hud-item">
+        <span class="hud-label">FIRST SPOKEN CLAUSE</span>
+        <span class="hud-value" id="ttsMetric">-- ms</span>
+        <span class="hud-sub">Edge-TTS Pipelined</span>
+      </div>
+      <div class="latency-hud-item highlight">
+        <span class="hud-label">TOTAL ROUNDTRIP</span>
+        <span class="hud-value" id="totalMetric">-- ms</span>
+        <span class="hud-sub">Alexa/Siri Target &lt; 1.2s</span>
+      </div>
+    </section>
+
+    <!-- Main Grid Layout -->
+    <main class="dashboard-grid">
+      <!-- Left Column: Voice Orb & Interactive Controller -->
+      <section class="card orb-card">
+        <div class="card-header">
+          <div class="badge-tag">ASSISTANT ENGINE</div>
+          <span class="state-chip" id="assistantStateChip">STANDBY</span>
+        </div>
+
+        <!-- Voice Assistant Agent Mode Bar -->
+        <div class="agent-mode-bar">
+          <label class="toggle-control" title="Continue conversation without clicking between turns">
+            <input type="checkbox" id="chkFollowUp" checked />
+            <span class="toggle-slider"></span>
+            <span class="toggle-text">Hands-Free Follow-Up</span>
+          </label>
+          <div class="engine-selector-group">
+            <label for="selVoiceEngine" class="engine-label">Voice Mode:</label>
+            <select id="selVoiceEngine" class="engine-select">
+              <option value="neural" selected>Neural Cloud (Natural)</option>
+              <option value="instant">Instant Local (&lt;50ms)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Central Animated Voice Sphere / Orb -->
+        <div class="orb-container">
+          <div class="pulse-ring ring-outer"></div>
+          <div class="pulse-ring ring-middle"></div>
+          <div class="pulse-ring ring-inner"></div>
+          
+          <!-- Soundwave Bars for Listening/Speaking -->
+          <div class="waveform-visualizer" id="waveformVisualizer">
+            <span class="bar"></span>
+            <span class="bar"></span>
+            <span class="bar"></span>
+            <span class="bar"></span>
+            <span class="bar"></span>
+            <span class="bar"></span>
+            <span class="bar"></span>
+          </div>
+
+          <div class="voice-orb" id="voiceOrb">
+            <div class="orb-core">
+              <button id="btnVoiceTrigger" class="orb-trigger-button" aria-label="Toggle Voice Listening">
+                <svg id="micIcon" class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                  <line x1="12" x2="12" y1="19" y2="22"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="orb-caption">
+          <h2 id="orbStatusHeadline">Click to Activate Voice Capture</h2>
+          <p id="orbStatusSub">WebSocket bidirectional channel ready for streaming events.</p>
+        </div>
+
+        <!-- Quick Controls Deck -->
+        <div class="controls-deck">
+          <button id="btnStartListening" class="btn btn-primary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg">
+              <circle cx="12" cy="12" r="10"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+            Start Listening
+          </button>
+          <button id="btnSimulateTurn" class="btn btn-secondary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            Simulate Full Cycle
+          </button>
+          <button id="btnPing" class="btn btn-ghost">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg">
+              <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+            </svg>
+            Ping WS
+          </button>
+        </div>
+
+        <!-- Custom Prompt Input -->
+        <div class="input-utterance-group">
+          <input type="text" id="txtCustomUtterance" placeholder="Send simulated voice prompt or text frame..." />
+          <button id="btnSendUtterance" class="btn-send">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </div>
+      </section>
+
+      <!-- Right Column: Real-Time Telemetry & WebSocket Logs -->
+      <section class="card terminal-card">
+        <div class="terminal-header">
+          <div class="terminal-title-group">
+            <div class="terminal-dots">
+              <span class="dot dot-red"></span>
+              <span class="dot dot-yellow"></span>
+              <span class="dot dot-green"></span>
+            </div>
+            <span class="terminal-title">LIVE TELEMETRY & WEBSOCKET CONSOLE</span>
+          </div>
+          <div class="terminal-actions">
+            <label class="toggle-scroll" title="Lock autoscroll to bottom">
+              <input type="checkbox" id="chkAutoScroll" checked />
+              <span>Auto-scroll</span>
+            </label>
+            <button id="btnClearLogs" class="btn-clear" title="Clear console">Clear</button>
+          </div>
+        </div>
+
+        <div class="terminal-filters">
+          <button class="filter-tab active" data-filter="all">All Frames</button>
+          <button class="filter-tab" data-filter="ws">WebSocket</button>
+          <button class="filter-tab" data-filter="state">State</button>
+          <button class="filter-tab" data-filter="system">System</button>
+        </div>
+
+        <div class="terminal-body" id="terminalOutput">
+          <!-- Live events streamed here -->
+        </div>
+
+        <div class="terminal-footer">
+          <span id="logCount">0 events logged</span>
+          <span class="endpoint-indicator">WS: ws://127.0.0.1:8000/ws • {{ version }}</span>
+        </div>
+      </section>
+    </main>
+
+    <!-- Phase 1 Architecture & Study Concept Deck -->
+    <section class="concepts-grid">
+      <div class="concept-card">
+        <div class="concept-icon">⚡</div>
+        <h3>FastAPI Async Routing</h3>
+        <p>Non-blocking asynchronous event loops allow thousands of concurrent connections with native ASGI performance.</p>
+      </div>
+      <div class="concept-card">
+        <div class="concept-icon">🔄</div>
+        <h3>WebSocket Protocol</h3>
+        <p>Full-duplex persistent TCP connection over <code>/ws</code> bypassing HTTP overhead for real-time audio and status streaming.</p>
+      </div>
+      <div class="concept-card">
+        <div class="concept-icon">📦</div>
+        <h3>Jinja2 & Static Asset Pipelines</h3>
+        <p>Server-side templating dynamically injecting application context alongside cached static CSS stylesheets and JS bundles.</p>
+      </div>
+      <div class="concept-card">
+        <div class="concept-icon">🎨</div>
+        <h3>Reactive UI State Machines</h3>
+        <p>Synchronized frontend state engine responding to backend lifecycle cues (Standby, Listening, Thinking, Speaking).</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- Client-side script -->
+  <script src="{{ url_for('static', path='js/app.js') }}"></script>
+</body>
+</html>

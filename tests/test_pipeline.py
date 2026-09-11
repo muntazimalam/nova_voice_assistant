@@ -1,4 +1,5 @@
 """End-to-end pipeline tests (STT skipped; LLM and TTS are stubbed, offline)."""
+
 import asyncio
 import json
 
@@ -36,7 +37,7 @@ def _stub_services(monkeypatch, sentences):
     ``sentences`` are yielded token-by-token like a real Gemini stream, and the
     TTS fake returns a unique byte-marker per sentence.
     """
-    import app.main as main
+    from app import main
 
     synced = []
 
@@ -63,7 +64,9 @@ async def _await_pipeline(state, timeout: float = 3.0):
 
 
 class TestPipelineEndToEnd:
-    async def test_streams_speech_with_frames_and_commits_history(self, fake_ws, monkeypatch):
+    async def test_streams_speech_with_frames_and_commits_history(
+        self, fake_ws, monkeypatch
+    ):
         state = ConnectionState()
         pipeline = VoicePipeline(state)
         synced = _stub_services(
@@ -91,18 +94,25 @@ class TestPipelineEndToEnd:
         assert state.stage == "IDLE"
         assert state.history == [
             {"role": "user", "content": "what time is it"},
-            {"role": "assistant", "content": "Hello there! It is sunny today. Let's build."},
+            {
+                "role": "assistant",
+                "content": "Hello there! It is sunny today. Let's build.",
+            },
         ]
 
-    async def test_interrupt_stops_speech_and_returns_to_idle(self, fake_ws, monkeypatch):
-        import app.main as main
+    async def test_interrupt_stops_speech_and_returns_to_idle(
+        self, fake_ws, monkeypatch
+    ):
+        from app import main
 
         state = ConnectionState()
         pipeline = VoicePipeline(state)
 
         async def slow_llm(history):
             # Emit tokens slowly so we can interrupt mid-stream.
-            for token in "This is a long answer to interrupt. It keeps going. And going!":
+            for (
+                token
+            ) in "This is a long answer to interrupt. It keeps going. And going!":
                 yield token
                 await asyncio.sleep(0.001)
 
@@ -130,8 +140,9 @@ class TestPipelineEndToEnd:
         assert state.busy is False
 
     async def test_barge_in_grace_period_ignores_reply_echo(self, fake_ws, monkeypatch):
-        import app.main as main
         import numpy as np
+
+        from app import main
         from app.main import handle_audio_frame
 
         state = ConnectionState()
@@ -140,25 +151,30 @@ class TestPipelineEndToEnd:
         state.wake_buffer = main.wake_service.new_buffer()
         state.speaking_started_at = state.now_ms()
 
-        pcm = (np.full(320, 30000, dtype="<i2").tobytes())
+        pcm = np.full(320, 30000, dtype="<i2").tobytes()
         required = max(1, main.settings.barge_in_required_frames)
 
         # Even sustained voice inside the grace window must be ignored.
         for _ in range(required):
             await handle_audio_frame(fake_ws, pipeline, state, pcm)
-        assert not state.interrupt_event.is_set(), "barge-in must be ignored inside grace window"
+        assert not state.interrupt_event.is_set(), (
+            "barge-in must be ignored inside grace window"
+        )
 
         # After the grace window, sustained voice (and no recent TTS audio) fires.
         state.speaking_started_at = state.now_ms() - state.barge_in_grace_ms - 100
         state.speaking_voice_streak = 0
         for _ in range(required):
             await handle_audio_frame(fake_ws, pipeline, state, pcm)
-        assert state.interrupt_event.is_set(), "barge-in should fire after the grace window"
+        assert state.interrupt_event.is_set(), (
+            "barge-in should fire after the grace window"
+        )
 
     async def test_barge_in_gap_ignores_voice_while_talking(self, fake_ws, monkeypatch):
         """Continuous echo of Nova's own voice must never self-truncate a reply."""
-        import app.main as main
         import numpy as np
+
+        from app import main
         from app.main import handle_audio_frame
 
         state = ConnectionState()
@@ -169,21 +185,28 @@ class TestPipelineEndToEnd:
         # TTS audio is actively flowing (this is the "talking" window).
         state.last_audio_sent_at = state.now_ms()
 
-        pcm = (np.full(320, 30000, dtype="<i2").tobytes())
+        pcm = np.full(320, 30000, dtype="<i2").tobytes()
         for _ in range(main.settings.barge_in_required_frames * 3):
             await handle_audio_frame(fake_ws, pipeline, state, pcm)
-        assert not state.interrupt_event.is_set(), "barge-in must not fire while TTS audio flows"
+        assert not state.interrupt_event.is_set(), (
+            "barge-in must not fire while TTS audio flows"
+        )
 
         # Once audio stops and a gap elapses, sustained user voice can still interrupt.
         state.last_audio_sent_at = state.now_ms() - state.barge_in_gap_ms - 100
         state.speaking_voice_streak = 0
         for _ in range(main.settings.barge_in_required_frames):
             await handle_audio_frame(fake_ws, pipeline, state, pcm)
-        assert state.interrupt_event.is_set(), "barge-in should fire during a genuine pause"
+        assert state.interrupt_event.is_set(), (
+            "barge-in should fire during a genuine pause"
+        )
 
-    async def test_listening_debounce_requires_sustained_voice(self, fake_ws, monkeypatch):
-        import app.main as main
+    async def test_listening_debounce_requires_sustained_voice(
+        self, fake_ws, monkeypatch
+    ):
         import numpy as np
+
+        from app import main
         from app.main import handle_audio_frame
 
         state = ConnectionState()
@@ -231,7 +254,7 @@ class TestPipelineEndToEnd:
         assert state.stage == "IDLE"
 
     async def test_busy_guard_rejects_overlap(self, fake_ws, monkeypatch):
-        import app.main as main
+        from app import main
 
         state = ConnectionState()
         pipeline = VoicePipeline(state)

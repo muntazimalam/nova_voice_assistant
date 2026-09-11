@@ -1,5 +1,5 @@
 import asyncio
-import contextvars
+import contextlib
 import json
 import logging
 import re
@@ -8,7 +8,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,19 +16,24 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from . import __version__
 from .cache import LLMCache, ResponseSummarizer
 from .codec import OpusCodec, get_codec
 from .config import get_settings
 from .echo_cancel import EchoCanceler, get_echo_canceler
 from .llm import LLMService
-from .logging_config import ConnectionLogger, clear_correlation_id, set_correlation_id, setup_structured_logging
-from .rate_limit import RateLimiter, get_rate_limiter
+from .logging_config import (
+    ConnectionLogger,
+    clear_correlation_id,
+    set_correlation_id,
+    setup_structured_logging,
+)
+from .rate_limit import RateLimiter
 from .state import ConnectionState
 from .stt import SpeechToText
 from .tts import TextToSpeech
 from .vad import EndpointDetector, get_endpoint_detector
 from .wake import WakeDetector
-from . import __version__
 
 # Configure structured logging
 setup_structured_logging(level=logging.INFO)
@@ -51,15 +56,15 @@ tts_service = TextToSpeech(settings)
 wake_service = WakeDetector(settings, stt_service)
 
 # Advanced pipeline components
-codec: Optional[OpusCodec] = None
-vad: Optional[EndpointDetector] = None
-echo_canceler: Optional[EchoCanceler] = None
-llm_cache: Optional[LLMCache] = None
-summarizer: Optional[ResponseSummarizer] = None
-rate_limiter: Optional[RateLimiter] = None
+codec: OpusCodec | None = None
+vad: EndpointDetector | None = None
+echo_canceler: EchoCanceler | None = None
+llm_cache: LLMCache | None = None
+summarizer: ResponseSummarizer | None = None
+rate_limiter: RateLimiter | None = None
 
 # Session resumption: map session_id -> ConversationState for reconnect recovery
-session_store: Dict[str, Dict[str, Any]] = {}
+session_store: dict[str, dict[str, Any]] = {}
 
 
 def _init_advanced_features() -> None:
@@ -85,7 +90,10 @@ def _init_advanced_features() -> None:
     # Silero VAD
     if settings.use_silero_vad:
         vad = get_endpoint_detector()
-        logger.info("Silero VAD initialized: %s", "available" if vad._vad.available else "RMS fallback")
+        logger.info(
+            "Silero VAD initialized: %s",
+            "available" if vad._vad.available else "RMS fallback",
+        )
     else:
         logger.info("Silero VAD disabled by config.")
 
@@ -102,8 +110,11 @@ def _init_advanced_features() -> None:
             max_size=settings.llm_cache_max_size,
             default_ttl_seconds=settings.llm_cache_ttl_seconds,
         )
-        logger.info("LLM response cache initialized (max=%d, ttl=%.0fs).",
-                     settings.llm_cache_max_size, settings.llm_cache_ttl_seconds)
+        logger.info(
+            "LLM response cache initialized (max=%d, ttl=%.0fs).",
+            settings.llm_cache_max_size,
+            settings.llm_cache_ttl_seconds,
+        )
     else:
         logger.info("LLM response cache disabled by config.")
 
@@ -121,8 +132,11 @@ def _init_advanced_features() -> None:
             window_seconds=settings.rate_limit_window_seconds,
             burst_size=settings.rate_limit_burst_size,
         )
-        logger.info("Rate limiter initialized (max=%d/%.0fs).",
-                     settings.rate_limit_max_requests, settings.rate_limit_window_seconds)
+        logger.info(
+            "Rate limiter initialized (max=%d/%.0fs).",
+            settings.rate_limit_max_requests,
+            settings.rate_limit_window_seconds,
+        )
     else:
         logger.info("Rate limiter disabled by config.")
 
@@ -147,7 +161,11 @@ def _warmup() -> None:
                 tts_service._get_piper().load()
             logger.info("%s TTS engine ready.", settings.tts_engine)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("%s TTS warmup failed (will fall back to edge): %s", settings.tts_engine, exc)
+            logger.warning(
+                "%s TTS warmup failed (will fall back to edge): %s",
+                settings.tts_engine,
+                exc,
+            )
     logger.info("Warmup complete.")
 
 
@@ -176,7 +194,8 @@ def _prune_sessions(ttl_seconds: float) -> None:
     """Remove sessions that have been idle (disconnected) past their TTL."""
     now = time.time()
     stale = [
-        cid for cid, data in session_store.items()
+        cid
+        for cid, data in session_store.items()
         if now - data.get("last_seen", data.get("created_at", 0)) > ttl_seconds
     ]
     for cid in stale:
@@ -212,10 +231,10 @@ class ConnectionManager:
     """Manages active client WebSocket connections and message broadcasting."""
 
     def __init__(self) -> None:
-        self.active_connections: List[WebSocket] = []
-        self.connection_sessions: Dict[WebSocket, str] = {}  # ws -> session_id
+        self.active_connections: list[WebSocket] = []
+        self.connection_sessions: dict[WebSocket, str] = {}  # ws -> session_id
 
-    async def connect(self, websocket: WebSocket, session_id: Optional[str] = None) -> str:
+    async def connect(self, websocket: WebSocket, session_id: str | None = None) -> str:
         await websocket.accept()
         self.active_connections.append(websocket)
 
@@ -228,8 +247,11 @@ class ConnectionManager:
 
         self.connection_sessions[websocket] = cid
         set_correlation_id(cid)
-        logger.info("New WebSocket client connected (session=%s). Active: %d",
-                     cid, len(self.active_connections))
+        logger.info(
+            "New WebSocket client connected (session=%s). Active: %d",
+            cid,
+            len(self.active_connections),
+        )
         return cid
 
     def disconnect(self, websocket: WebSocket) -> None:
@@ -239,17 +261,20 @@ class ConnectionManager:
             # Persist state for potential session resumption
             if session_id and session_id in session_store:
                 session_store[session_id]["last_seen"] = time.time()
-            logger.info("WebSocket client disconnected (session=%s). Active: %d",
-                         session_id, len(self.active_connections))
+            logger.info(
+                "WebSocket client disconnected (session=%s). Active: %d",
+                session_id,
+                len(self.active_connections),
+            )
 
-    def get_session_id(self, websocket: WebSocket) -> Optional[str]:
+    def get_session_id(self, websocket: WebSocket) -> str | None:
         return self.connection_sessions.get(websocket)
 
 
 manager = ConnectionManager()
 
 
-async def send_json(websocket: WebSocket, data: Dict[str, Any]) -> None:
+async def send_json(websocket: WebSocket, data: dict[str, Any]) -> None:
     """Send a JSON frame, surfacing send failures distinctly from inference."""
     if "timestamp" not in data:
         data["timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -267,12 +292,14 @@ class VoicePipeline:
     def __init__(self, state: ConnectionState) -> None:
         self.state = state
 
-    async def send(self, ws: WebSocket, data: Dict[str, Any]) -> None:
+    async def send(self, ws: WebSocket, data: dict[str, Any]) -> None:
         await send_json(ws, data)
 
-    async def set_stage(self, ws: WebSocket, stage: str, message: str = "", **extra: Any) -> None:
+    async def set_stage(
+        self, ws: WebSocket, stage: str, message: str = "", **extra: Any
+    ) -> None:
         self.state.stage = stage
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "type": "state_change",
             "status": stage.lower(),
             "stage": stage,
@@ -281,7 +308,9 @@ class VoicePipeline:
         payload.update(extra)
         await self.send(ws, payload)
 
-    async def run_command(self, ws: WebSocket, text: str, stt_latency_ms: float = 0.0) -> None:
+    async def run_command(
+        self, ws: WebSocket, text: str, stt_latency_ms: float = 0.0
+    ) -> None:
         """Start the text->LLM->TTS pipeline as a non-blocking background task.
 
         Unlike the old blocking flow, this returns immediately so the WebSocket
@@ -291,51 +320,63 @@ class VoicePipeline:
         if self.state.busy or self.state.pipeline_lock.locked():
             await self.send(
                 ws,
-                {"type": "system_event", "status": "warning", "message": "Busy — please wait for the current reply to finish."},
+                {
+                    "type": "system_event",
+                    "status": "warning",
+                    "message": "Busy — please wait for the current reply to finish.",
+                },
             )
             return
 
         self.state.interrupt_event.clear()
         self.state.busy = True
-        self.state.pipeline_task = asyncio.create_task(self._execute(ws, text, stt_latency_ms))
+        self.state.pipeline_task = asyncio.create_task(
+            self._execute(ws, text, stt_latency_ms)
+        )
 
-    async def _execute(self, ws: WebSocket, text: str, stt_latency_ms: float = 0.0) -> None:
+    async def _execute(
+        self, ws: WebSocket, text: str, stt_latency_ms: float = 0.0
+    ) -> None:
         try:
             async with self.state.pipeline_lock:
                 await self._run_command_locked(ws, text, stt_latency_ms)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Pipeline error: %s", exc)
-            try:
-                await self.set_stage(ws, "IDLE", "An internal error occurred. Please try again.")
-            except Exception:  # noqa: BLE001
-                pass
+        except Exception:
+            logger.exception("Pipeline error")
+            with contextlib.suppress(Exception):
+                await self.set_stage(
+                    ws, "IDLE", "An internal error occurred. Please try again."
+                )
         finally:
             self.state.busy = False
             self.state.pipeline_task = None
 
-    async def _run_command_locked(self, ws: WebSocket, text: str, stt_latency_ms: float = 0.0) -> None:
+    async def _run_command_locked(
+        self, ws: WebSocket, text: str, stt_latency_ms: float = 0.0
+    ) -> None:
         if not text.strip():
             await self.set_stage(ws, "IDLE", "No speech recognized.")
             return
 
         t_cmd_start = time.perf_counter()
-        await self.set_stage(ws, "PROCESSING", "Synthesizing intent and generating response...")
+        await self.set_stage(
+            ws, "PROCESSING", "Synthesizing intent and generating response..."
+        )
 
         # Build message history for the LLM on a working copy so we only commit
         # the user turn together with the assistant turn (keeps history balanced).
-        history = list(self.state.history[-settings.history_limit * 2:])
+        history = list(self.state.history[-settings.history_limit * 2 :])
         history.append({"role": "user", "content": text})
 
         state = self.state
 
-        reply_parts: List[str] = []
+        reply_parts: list[str] = []
         sentences: asyncio.Queue = asyncio.Queue()
         audio_started = False
         llm_error: str = ""
-        t_llm_first: Optional[float] = None
-        t_tts_first: Optional[float] = None
+        t_llm_first: float | None = None
+        t_tts_first: float | None = None
         cache_hit = False
 
         async def emit_audio_start() -> None:
@@ -352,7 +393,9 @@ class VoicePipeline:
             ec = self.state.echo_canceler
             if ec is not None:
                 ec.set_outputting(True)
-            await ws.send_text(json.dumps({"type": "audio_start", "encoding": tts_service.encoding}))
+            await ws.send_text(
+                json.dumps({"type": "audio_start", "encoding": tts_service.encoding})
+            )
 
         async def llm_producer() -> None:
             """Stream LLM tokens, split into spoken chunks immediately for rapid TTS."""
@@ -375,15 +418,25 @@ class VoicePipeline:
                         buffer_ += token
 
                         while True:
-                            regex = _FIRST_CLAUSE_RE if not first_chunk_emitted else _SENTENCE_RE
+                            regex = (
+                                _FIRST_CLAUSE_RE
+                                if not first_chunk_emitted
+                                else _SENTENCE_RE
+                            )
                             m = regex.search(buffer_)
                             if m:
-                                chunk_text = buffer_[:m.end()].strip()
-                                buffer_ = buffer_[m.end():]
+                                chunk_text = buffer_[: m.end()].strip()
+                                buffer_ = buffer_[m.end() :]
                                 if chunk_text:
                                     first_chunk_emitted = True
                                     await sentences.put(chunk_text)
-                                    await self.send(ws, {"type": "transcript_partial", "content": chunk_text})
+                                    await self.send(
+                                        ws,
+                                        {
+                                            "type": "transcript_partial",
+                                            "content": chunk_text,
+                                        },
+                                    )
                                 continue
 
                             words = buffer_.strip().split()
@@ -394,16 +447,26 @@ class VoicePipeline:
                                 if chunk_text:
                                     first_chunk_emitted = True
                                     await sentences.put(chunk_text)
-                                    await self.send(ws, {"type": "transcript_partial", "content": chunk_text})
+                                    await self.send(
+                                        ws,
+                                        {
+                                            "type": "transcript_partial",
+                                            "content": chunk_text,
+                                        },
+                                    )
                                 continue
                             break
 
                         if len(window) >= 40:
-                            await self.send(ws, {"type": "transcript_partial", "content": window})
+                            await self.send(
+                                ws, {"type": "transcript_partial", "content": window}
+                            )
                             window = ""
 
                     if window:
-                        await self.send(ws, {"type": "transcript_partial", "content": window})
+                        await self.send(
+                            ws, {"type": "transcript_partial", "content": window}
+                        )
                     tail = buffer_.strip()
                     if tail:
                         await sentences.put(tail)
@@ -420,15 +483,25 @@ class VoicePipeline:
                     # Emit the very first clause immediately so TTS can start speaking
                     # within ~300-500ms instead of waiting for a full 15-word sentence.
                     while True:
-                        regex = _FIRST_CLAUSE_RE if not first_chunk_emitted else _SENTENCE_RE
+                        regex = (
+                            _FIRST_CLAUSE_RE
+                            if not first_chunk_emitted
+                            else _SENTENCE_RE
+                        )
                         m = regex.search(buffer_)
                         if m:
-                            chunk_text = buffer_[:m.end()].strip()
-                            buffer_ = buffer_[m.end():]
+                            chunk_text = buffer_[: m.end()].strip()
+                            buffer_ = buffer_[m.end() :]
                             if chunk_text:
                                 first_chunk_emitted = True
                                 await sentences.put(chunk_text)
-                                await self.send(ws, {"type": "transcript_partial", "content": chunk_text})
+                                await self.send(
+                                    ws,
+                                    {
+                                        "type": "transcript_partial",
+                                        "content": chunk_text,
+                                    },
+                                )
                             continue
 
                         # If no punctuation yet but first chunk has 5 words, emit early:
@@ -440,16 +513,26 @@ class VoicePipeline:
                             if chunk_text:
                                 first_chunk_emitted = True
                                 await sentences.put(chunk_text)
-                                await self.send(ws, {"type": "transcript_partial", "content": chunk_text})
+                                await self.send(
+                                    ws,
+                                    {
+                                        "type": "transcript_partial",
+                                        "content": chunk_text,
+                                    },
+                                )
                             continue
                         break
 
                     if len(window) >= 40:
-                        await self.send(ws, {"type": "transcript_partial", "content": window})
+                        await self.send(
+                            ws, {"type": "transcript_partial", "content": window}
+                        )
                         window = ""
 
                 if window:
-                    await self.send(ws, {"type": "transcript_partial", "content": window})
+                    await self.send(
+                        ws, {"type": "transcript_partial", "content": window}
+                    )
                 tail = buffer_.strip()
                 if tail:
                     await sentences.put(tail)
@@ -473,11 +556,14 @@ class VoicePipeline:
                     break
                 try:
                     await emit_audio_start()
-                    await self.send(ws, {
-                        "type": "audio_segment_start",
-                        "segment_index": seg_idx,
-                        "text": sentence,
-                    })
+                    await self.send(
+                        ws,
+                        {
+                            "type": "audio_segment_start",
+                            "segment_index": seg_idx,
+                            "text": sentence,
+                        },
+                    )
                     async for chunk in tts_service.stream_audio(sentence):
                         if state.interrupt_event.is_set():
                             break
@@ -489,14 +575,21 @@ class VoicePipeline:
                         ec = state.echo_canceler
                         if ec is not None:
                             loop = asyncio.get_running_loop()
-                            loop.call_soon(ec.register_container_output, chunk, tts_service.encoding)
+                            loop.call_soon(
+                                ec.register_container_output,
+                                chunk,
+                                tts_service.encoding,
+                            )
                         # Remember when audio last flowed so barge-in only counts
                         # during genuine pauses, never while Nova is speaking.
                         state.last_audio_sent_at = state.now_ms()
-                    await self.send(ws, {
-                        "type": "audio_segment_end",
-                        "segment_index": seg_idx,
-                    })
+                    await self.send(
+                        ws,
+                        {
+                            "type": "audio_segment_end",
+                            "segment_index": seg_idx,
+                        },
+                    )
                     seg_idx += 1
                 except asyncio.CancelledError:
                     raise
@@ -504,10 +597,7 @@ class VoicePipeline:
                     logger.error("TTS stream failed: %s", exc)
                     break
 
-        try:
-            await asyncio.gather(llm_producer(), tts_consumer())
-        except asyncio.CancelledError:
-            raise
+        await asyncio.gather(llm_producer(), tts_consumer())
 
         # Cache the LLM response for future identical queries
         reply = "".join(reply_parts).strip()
@@ -529,11 +619,14 @@ class VoicePipeline:
 
         if not reply:
             if audio_started:
-                await ws.send_text(json.dumps({"type": "audio_end", "metrics": metrics}))
+                await ws.send_text(
+                    json.dumps({"type": "audio_end", "metrics": metrics})
+                )
             if llm_error:
                 detail = f" ({llm_error[:160]})" if llm_error else ""
                 await self.set_stage(
-                    ws, "IDLE",
+                    ws,
+                    "IDLE",
                     f"I encountered an error while thinking.{detail}",
                 )
             else:
@@ -544,22 +637,29 @@ class VoicePipeline:
             await ws.send_text(json.dumps({"type": "audio_end", "metrics": metrics}))
 
         # Send final reply text with telemetry
-        await self.send(ws, {
-            "type": "chat_reply",
-            "content": reply,
-            "metrics": metrics,
-        })
+        await self.send(
+            ws,
+            {
+                "type": "chat_reply",
+                "content": reply,
+                "metrics": metrics,
+            },
+        )
 
         # Commit both turns at once (bounded history).
         self.state.history.append({"role": "user", "content": text})
         self.state.history.append({"role": "assistant", "content": reply})
         if len(self.state.history) > settings.history_limit * 2 + 2:
-            del self.state.history[: len(self.state.history) - (settings.history_limit * 2 + 2)]
+            del self.state.history[
+                : len(self.state.history) - (settings.history_limit * 2 + 2)
+            ]
 
         # Conversation summarization: compress old turns when history gets long
-        if (summarizer is not None and
-                settings.conversation_summary_enabled and
-                len(self.state.history) >= settings.conversation_summary_turns * 2):
+        if (
+            summarizer is not None
+            and settings.conversation_summary_enabled
+            and len(self.state.history) >= settings.conversation_summary_turns * 2
+        ):
             loop = asyncio.get_running_loop()
             loop.create_task(self._summarize_history())
 
@@ -580,7 +680,12 @@ class VoicePipeline:
         summary = await summarizer.summarize(old_turns)
         if summary:
             # Replace old turns with a single summary entry
-            self.state.history = [{"role": "system", "content": f"Previous conversation summary: {summary}"}] + turns[settings.conversation_summary_turns * 2:]
+            self.state.history = [
+                {
+                    "role": "system",
+                    "content": f"Previous conversation summary: {summary}",
+                }
+            ] + turns[settings.conversation_summary_turns * 2 :]
             logger.info("Conversation summarized into %d chars.", len(summary))
 
 
@@ -670,7 +775,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         state = restored["state"]
     else:
         state = ConnectionState()
-    session_store[cid] = {"state": state, "created_at": time.time(), "last_seen": time.time()}
+    session_store[cid] = {
+        "state": state,
+        "created_at": time.time(),
+        "last_seen": time.time(),
+    }
 
     state.wake_buffer = wake_service.new_buffer()
     # Reset any stale state left over from a crashed / disconnected session.
@@ -718,17 +827,21 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 raise WebSocketDisconnect(message.get("code", 1000))
 
             # Rate limiting for text/control messages
-            if kind == "websocket.receive" and message.get("text") is not None:
-                if rate_limiter and not rate_limiter.allow(cid):
-                    await send_json(
-                        websocket,
-                        {
-                            "type": "system_event",
-                            "status": "warning",
-                            "message": "Rate limit exceeded. Please slow down.",
-                        },
-                    )
-                    continue
+            if (
+                kind == "websocket.receive"
+                and message.get("text") is not None
+                and rate_limiter is not None
+                and not rate_limiter.allow(cid)
+            ):
+                await send_json(
+                    websocket,
+                    {
+                        "type": "system_event",
+                        "status": "warning",
+                        "message": "Rate limit exceeded. Please slow down.",
+                    },
+                )
+                continue
 
             # Binary audio chunk.
             if kind == "websocket.receive" and message.get("bytes") is not None:
@@ -818,9 +931,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 )
 
             elif msg_type == "simulate_cycle":
-                utterance = message_data.get("utterance", "Hello assistant, what is the weather today?")
+                utterance = message_data.get(
+                    "utterance", "Hello assistant, what is the weather today?"
+                )
                 await pipeline.set_stage(
-                    websocket, "LISTENING", f"Captured utterance: \"{utterance}\""
+                    websocket, "LISTENING", f'Captured utterance: "{utterance}"'
                 )
                 await asyncio.sleep(0.8)
                 await pipeline.run_command(websocket, utterance)
@@ -863,7 +978,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         manager.disconnect(websocket)
         logger.info("Client cleanly disconnected from /ws (session=%s)", cid)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error in websocket session: %s", exc)
         manager.disconnect(websocket)
     finally:
@@ -900,6 +1015,11 @@ async def handle_audio_frame(
     """Route a validated binary audio chunk through the wake/capture pipeline with instant VAD."""
     now = state.now_ms()
     ec = state.echo_canceler
+
+    wake_buffer = state.wake_buffer
+    if wake_buffer is None:
+        wake_buffer = wake_service.new_buffer()
+        state.wake_buffer = wake_buffer
 
     # Echo-aware speech detection: use Silero VAD when available, else RMS.
     # Skip speech detection entirely if this is likely assistant echo.
@@ -940,7 +1060,9 @@ async def handle_audio_frame(
             if state.speaking_voice_streak >= settings.barge_in_required_frames:
                 state.speaking_voice_streak = 0
                 if not state.interrupt_event.is_set():
-                    logger.info("Barge-in: user speech detected during assistant reply.")
+                    logger.info(
+                        "Barge-in: user speech detected during assistant reply."
+                    )
                     state.interrupt_event.set()
                     if ec is not None:
                         ec.set_outputting(False)
@@ -954,7 +1076,7 @@ async def handle_audio_frame(
         # so we can seed the command buffer with pre-roll audio when capture starts.
         # We are already explicitly listening — do NOT run wake confirmation, so
         # faster-whisper stays free for the real command transcription.
-        await wake_service.feed(pcm, state.wake_buffer, sniff_wake=False)
+        await wake_service.feed(pcm, wake_buffer, sniff_wake=False)
 
         if not is_voice:
             state.voice_streak = 0
@@ -975,7 +1097,7 @@ async def handle_audio_frame(
         state.last_voice_at = now
         state.has_speech = True
         state.command_buffer.clear()
-        state.command_buffer.extend(state.wake_buffer.tail(settings.wake_tail_millis))
+        state.command_buffer.extend(wake_buffer.tail(settings.wake_tail_millis))
         await pipeline.set_stage(websocket, "CAPTURING", "Listening...")
         return
 
@@ -991,8 +1113,14 @@ async def handle_audio_frame(
             if state.has_speech and state.last_voice_at is not None:
                 silence_dur = now - state.last_voice_at
                 cmd_dur = now - (state.capture_started_at or now)
-                if silence_dur >= settings.silence_timeout_ms and cmd_dur >= settings.min_command_ms:
-                    logger.info("Speech endpoint detected (silence: %.0f ms). Finalizing command.", silence_dur)
+                if (
+                    silence_dur >= settings.silence_timeout_ms
+                    and cmd_dur >= settings.min_command_ms
+                ):
+                    logger.info(
+                        "Speech endpoint detected (silence: %.0f ms). Finalizing command.",
+                        silence_dur,
+                    )
                     await finalize_audio(websocket, pipeline, state)
                     return
 
@@ -1006,13 +1134,13 @@ async def handle_audio_frame(
         return
 
     # STANDBY / IDLE: run wake-word detection on this connection's own buffer.
-    result = await wake_service.feed(pcm, state.wake_buffer)
+    result = await wake_service.feed(pcm, wake_buffer)
     if result == "wake":
         await pipeline.set_stage(
             websocket, "LISTENING", "Wake word detected. Listening for command..."
         )
         state.command_buffer.clear()
-        state.command_buffer.extend(state.wake_buffer.tail(settings.wake_tail_millis))
+        state.command_buffer.extend(wake_buffer.tail(settings.wake_tail_millis))
         state.stage = "CAPTURING"
         state.capture_started_at = now
         state.last_voice_at = now
@@ -1041,12 +1169,17 @@ async def capture_watchdog(
                 continue
 
             # Silence timeout since the last voice chunk.
-            if state.has_speech and state.last_voice_at is not None and (
-                now - state.last_voice_at > settings.silence_timeout_ms
+            if (
+                state.has_speech
+                and state.last_voice_at is not None
+                and (now - state.last_voice_at > settings.silence_timeout_ms)
             ):
                 cmd_dur = now - (state.capture_started_at or now)
                 if cmd_dur >= settings.min_command_ms:
-                    logger.info("Watchdog silence timeout reached (%.0f ms); finalizing capture.", now - state.last_voice_at)
+                    logger.info(
+                        "Watchdog silence timeout reached (%.0f ms); finalizing capture.",
+                        now - state.last_voice_at,
+                    )
                     await finalize_audio(websocket, pipeline, state)
     except asyncio.CancelledError:
         pass
@@ -1054,7 +1187,9 @@ async def capture_watchdog(
         logger.debug("Capture watchdog exiting: %s", exc)
 
 
-async def finalize_audio(websocket: WebSocket, pipeline: VoicePipeline, state: ConnectionState) -> None:
+async def finalize_audio(
+    websocket: WebSocket, pipeline: VoicePipeline, state: ConnectionState
+) -> None:
     """End command capture, transcribe, and run the LLM+TTS pipeline."""
     if state.finalizing:
         return
@@ -1062,7 +1197,9 @@ async def finalize_audio(websocket: WebSocket, pipeline: VoicePipeline, state: C
         # The reply pipeline is still busy. Clear the capture so the overflow
         # / endpoint checks don't spin on a full buffer every 20 ms while we wait.
         state.reset_capture()
-        logger.info("Skipping finalize: a pipeline is already running. Dropped captured audio.")
+        logger.info(
+            "Skipping finalize: a pipeline is already running. Dropped captured audio."
+        )
         return
     if state.stage not in ("LISTENING", "CAPTURING"):
         return
@@ -1077,11 +1214,14 @@ async def finalize_audio(websocket: WebSocket, pipeline: VoicePipeline, state: C
         min_bytes = int(settings.sample_rate * (settings.min_command_ms / 1000.0)) * 2
         if len(captured) < min_bytes:
             state.stage = "IDLE"
-            await pipeline.set_stage(websocket, "IDLE", "Too short to transcribe. Try again.")
+            await pipeline.set_stage(
+                websocket, "IDLE", "Too short to transcribe. Try again."
+            )
             return
 
         await pipeline.set_stage(
-            websocket, "PROCESSING",
+            websocket,
+            "PROCESSING",
             f"Transcribing {elapsed:.0f} ms of audio...",
         )
 
@@ -1108,11 +1248,14 @@ async def finalize_audio(websocket: WebSocket, pipeline: VoicePipeline, state: C
             return
 
         logger.info("Transcribed in %.1f ms: %r", stt_duration_ms, text)
-        await pipeline.send(websocket, {
-            "type": "transcript_final",
-            "content": text,
-            "stt_ms": round(stt_duration_ms, 1),
-        })
+        await pipeline.send(
+            websocket,
+            {
+                "type": "transcript_final",
+                "content": text,
+                "stt_ms": round(stt_duration_ms, 1),
+            },
+        )
         await pipeline.run_command(websocket, text, stt_latency_ms=stt_duration_ms)
     finally:
         state.finalizing = False
@@ -1123,7 +1266,5 @@ async def cancel_pipeline(state: ConnectionState) -> None:
     task = state.pipeline_task
     if task and not task.done():
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass

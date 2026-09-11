@@ -1,10 +1,10 @@
 """Per-connection runtime state for the always-on voice assistant."""
+
 from __future__ import annotations
 
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 from .echo_cancel import EchoCanceler
 from .stt import RollingAudioBuffer
@@ -24,11 +24,11 @@ class ConnectionState:
     command_buffer: bytearray = field(default_factory=bytearray)
 
     # Per-connection rolling wake buffer (never shared across clients).
-    wake_buffer: Optional[RollingAudioBuffer] = None
+    wake_buffer: RollingAudioBuffer | None = None
 
     # Timestamps for silence detection (monotonic milliseconds).
-    last_voice_at: Optional[float] = None
-    capture_started_at: Optional[float] = None
+    last_voice_at: float | None = None
+    capture_started_at: float | None = None
     has_speech: bool = False
 
     # Consecutive voiced audio chunks observed while LISTENING. Capture only
@@ -47,7 +47,7 @@ class ConnectionState:
 
     # Background task running the current utterance pipeline, so the receive
     # loop stays responsive to pings / stop while a reply is streaming.
-    pipeline_task: Optional[asyncio.Task] = None
+    pipeline_task: asyncio.Task | None = None
 
     # Set while audio is being finalized to keep concurrent finalizers
     # (watchdog + audio_end) from double-transcribing.
@@ -59,18 +59,18 @@ class ConnectionState:
     # Per-connection TTS output tracking for echo cancellation. This MUST be
     # per-connection: a module-global canceller would treat every client's mic
     # as echo while any single client's reply is playing.
-    echo_canceler: Optional[EchoCanceler] = None
+    echo_canceler: EchoCanceler | None = None
 
     # Monotonic ms when the current reply started speaking. Barge-in is ignored
     # for the first `barge_in_grace_ms` so Nova's own TTS echo leaking into the
     # mic cannot interrupt the reply within the first fraction of a second.
-    speaking_started_at: Optional[float] = None
+    speaking_started_at: float | None = None
     barge_in_grace_ms: float = 600.0
 
     # Monotonic ms when the last TTS audio chunk was sent to the client. Barge-in
     # is also ignored while audio is actively flowing (see `barge_in_gap_ms`),
     # so a continuous echo of Nova's own speech can never count as user input.
-    last_audio_sent_at: Optional[float] = None
+    last_audio_sent_at: float | None = None
     barge_in_gap_ms: float = 250.0
 
     def reset_capture(self) -> None:

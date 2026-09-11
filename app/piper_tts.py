@@ -16,6 +16,7 @@ The emitted audio is a complete WAV per spoken segment (decodeAudioData /
 HTMLAudioElement auto-detect the container, so the existing browser playback
 code needs no changes).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,7 +24,6 @@ import io
 import logging
 import wave
 from pathlib import Path
-from typing import Iterator
 
 from .config import Settings
 
@@ -38,7 +38,9 @@ class LocalPiper:
         self._config_path = Path(settings.piper_config_path)
         if not self._config_path.exists():
             # Fall back to the standard sibling config name (<model>.onnx.json).
-            self._config_path = self._model_path.with_suffix(self._model_path.suffix + ".json")
+            self._config_path = self._model_path.with_suffix(
+                self._model_path.suffix + ".json"
+            )
         self._voice = None
         self._sample_rate = 22050
 
@@ -111,4 +113,4 @@ class LocalPiper:
         # streaming path reacts while the rest of the pipeline continues.
         step = 16 * 1024
         for i in range(0, len(wav), step):
-            yield wav[i:i + step]
+            yield wav[i : i + step]

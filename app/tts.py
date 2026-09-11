@@ -12,11 +12,11 @@
 The browser plays whatever container arrives (MP3 or WAV) via the WebAudio
 ``decodeAudioData`` path, so no client-side changes are needed to switch.
 """
+
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import AsyncIterator, Optional
+from collections.abc import AsyncIterator
 
 from .config import Settings
 
@@ -66,12 +66,15 @@ class TextToSpeech:
             # or package). Switching permanently to edge avoids re-trying a broken
             # config on every single request — no more per-turn error spam.
             try:
-                engine = self._get_piper() if self.engine == "piper" else self._get_xtts()
+                engine = (
+                    self._get_piper() if self.engine == "piper" else self._get_xtts()
+                )
                 engine.load()  # raise fast here if unconfigured
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Switching to edge-tts permanently: %s unavailable at load (%s).",
-                    self.engine, exc,
+                    self.engine,
+                    exc,
                 )
                 self.engine = "edge"
                 self.encoding = "mp3"
@@ -87,7 +90,8 @@ class TextToSpeech:
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "%s TTS stream failed transiently (%s); using edge-tts for this sentence.",
-                    self.engine, exc,
+                    self.engine,
+                    exc,
                 )
                 async for chunk in self._stream_edge_mp3(text):
                     yield chunk

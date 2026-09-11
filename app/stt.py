@@ -3,11 +3,11 @@
 Transcribes 16kHz mono Int16 PCM into text. The model is downloaded
 automatically on first use via the Hugging Face hub.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import List, Optional
 
 import numpy as np
 
@@ -88,7 +88,7 @@ class SpeechToText:
     def transcribe(
         self,
         pcm: bytes,
-        initial_prompt: Optional[str] = None,
+        initial_prompt: str | None = None,
         vad_filter: bool = True,
     ) -> str:
         """Transcribe raw 16kHz Int16 PCM, returning trimmed text with minimal latency.
@@ -117,7 +117,7 @@ class SpeechToText:
             condition_on_previous_text=False,
             initial_prompt=initial_prompt,
         )
-        parts: List[str] = []
+        parts: list[str] = []
         for segment in segments:
             if segment.no_speech_prob and segment.no_speech_prob > 0.9:
                 continue

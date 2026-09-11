@@ -1,4 +1,5 @@
 """LLM response caching for reduced latency and API costs."""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +9,6 @@ import logging
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger("voice_assistant")
 
@@ -46,7 +46,7 @@ class LLMCache:
         key_data = f"{model}:{content}"
         return hashlib.sha256(key_data.encode()).hexdigest()[:32]
 
-    async def get(self, messages: list[dict], model: str = "") -> Optional[str]:
+    async def get(self, messages: list[dict], model: str = "") -> str | None:
         key = self._make_key(messages, model)
         async with self._lock:
             entry = self._cache.get(key)
@@ -68,7 +68,7 @@ class LLMCache:
         messages: list[dict],
         response: str,
         model: str = "",
-        ttl_seconds: Optional[float] = None,
+        ttl_seconds: float | None = None,
     ) -> None:
         key = self._make_key(messages, model)
         ttl = ttl_seconds or self._default_ttl
@@ -76,7 +76,7 @@ class LLMCache:
             if key in self._cache:
                 del self._cache[key]
             while len(self._cache) >= self._max_size:
-                evicted_key, _ = self._cache.popitem(last=False)
+                self._cache.popitem(last=False)
                 self._stats["evictions"] += 1
             self._cache[key] = CacheEntry(
                 response=response,
@@ -120,7 +120,7 @@ class ResponseSummarizer:
 
     async def summarize(self, messages: list[dict]) -> str:
         """Generate a concise summary of conversation turns.
-        
+
         Falls back to rough extractive summarization if the LLM is unavailable,
         so the feature degrades gracefully.
         """
@@ -140,16 +140,48 @@ class ResponseSummarizer:
             return text
 
         sentences = [
-            s.strip() for s in text.replace("\n", " ").split(". ")
-            if s.strip()
+            s.strip() for s in text.replace("\n", " ").split(". ") if s.strip()
         ]
 
         words = text.lower().split()
         stopwords = {
-            "a", "an", "the", "and", "or", "but", "if", "then", "of", "to",
-            "in", "on", "for", "with", "at", "by", "from", "as", "is", "are",
-            "was", "were", "i", "you", "he", "she", "it", "we", "they",
-            "what", "when", "where", "how", "why", "do", "does", "did",
+            "a",
+            "an",
+            "the",
+            "and",
+            "or",
+            "but",
+            "if",
+            "then",
+            "of",
+            "to",
+            "in",
+            "on",
+            "for",
+            "with",
+            "at",
+            "by",
+            "from",
+            "as",
+            "is",
+            "are",
+            "was",
+            "were",
+            "i",
+            "you",
+            "he",
+            "she",
+            "it",
+            "we",
+            "they",
+            "what",
+            "when",
+            "where",
+            "how",
+            "why",
+            "do",
+            "does",
+            "did",
         }
         word_freq: dict[str, int] = {}
         for w in words:
@@ -162,7 +194,9 @@ class ResponseSummarizer:
 
         scored = []
         for s in sentences:
-            score = sum(word_freq.get(w.strip(".,!?;:()\"'"), 0) for w in s.lower().split())
+            score = sum(
+                word_freq.get(w.strip(".,!?;:()\"'"), 0) for w in s.lower().split()
+            )
             scored.append((score, s))
 
         scored.sort(reverse=True, key=lambda x: x[0])

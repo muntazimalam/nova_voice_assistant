@@ -1,6 +1,6 @@
 """Tests for the advanced pipeline features (codec, cache, VAD, echo cancel)."""
+
 import asyncio
-import time
 
 import numpy as np
 import pytest
@@ -10,8 +10,8 @@ from app.codec import AudioFrameBuffer, OpusCodec
 from app.echo_cancel import EchoCanceler
 from app.rate_limit import RateLimiter
 
-
 # ── Opus Codec ───────────────────────────────────────────────────────────────
+
 
 class TestOpusCodec:
     def test_roundtrip_silence(self):
@@ -27,7 +27,9 @@ class TestOpusCodec:
         codec = OpusCodec()
         frame_size = codec.get_frame_size()
         # 440 Hz tone at 16 kHz, one frame
-        samples = np.sin(2 * np.pi * 440 * np.arange(frame_size // 2) / 16000).astype(np.int16)
+        samples = np.sin(2 * np.pi * 440 * np.arange(frame_size // 2) / 16000).astype(
+            np.int16
+        )
         pcm = samples.tobytes()
         opus = codec.encode_pcm_to_opus(pcm)
         decoded = codec.decode_opus_to_pcm(opus)
@@ -49,6 +51,7 @@ class TestAudioFrameBuffer:
 
 
 # ── LLM Cache ────────────────────────────────────────────────────────────────
+
 
 class TestLLMCache:
     @pytest.mark.asyncio
@@ -81,6 +84,7 @@ class TestLLMCache:
 
 # ── Echo Canceler ────────────────────────────────────────────────────────────
 
+
 class TestEchoCanceler:
     def test_no_output_no_echo(self):
         ec = EchoCanceler()
@@ -88,13 +92,16 @@ class TestEchoCanceler:
 
     def test_register_output_marks_echo_window(self):
         ec = EchoCanceler()
-        samples = (np.sin(2 * np.pi * 440 * np.arange(320) / 16000) * 8000).astype(np.int16)
+        samples = (np.sin(2 * np.pi * 440 * np.arange(320) / 16000) * 8000).astype(
+            np.int16
+        )
         ec.set_outputting(True)
         ec.register_output(samples.tobytes())
         assert ec._is_outputting
 
 
 # ── Rate Limiter ─────────────────────────────────────────────────────────────
+
 
 class TestRateLimiter:
     def test_allows_within_budget(self):

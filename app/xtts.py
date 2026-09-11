@@ -17,13 +17,13 @@ The emitted audio is a full WAV per spoken segment at 24 kHz mono int16;
 the browser's ``decodeAudioData`` auto-detects the WAV container, so no
 client changes are required.
 """
+
 from __future__ import annotations
 
 import asyncio
 import io
 import logging
 import wave
-from typing import Optional
 
 from .config import Settings
 
@@ -105,7 +105,7 @@ class LocalXTTS:
             wav = await loop.run_in_executor(None, self._synth_wav, text)
         step = 16 * 1024
         for i in range(0, len(wav), step):
-            yield wav[i:i + step]
+            yield wav[i : i + step]
 
     @property
     def speaker(self) -> str:

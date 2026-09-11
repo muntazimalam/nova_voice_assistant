@@ -3,13 +3,10 @@
 Provides encoding/decoding of PCM audio to/from Opus frames,
 reducing bandwidth by ~50% while improving noise resilience.
 """
+
 from __future__ import annotations
 
-import asyncio
-import io
 import logging
-import struct
-from typing import Optional
 
 import numpy as np
 
@@ -23,7 +20,7 @@ _FRAME_SIZE = int(_SAMPLE_RATE * _FRAME_DURATION_MS / 1000)  # 320 samples
 
 class OpusCodec:
     """Opus encoder/decoder for real-time voice streaming.
-    
+
     Falls back to raw PCM if opuslib is not available.
     """
 
@@ -36,7 +33,10 @@ class OpusCodec:
     def _load(self) -> None:
         try:
             import opuslib
-            self._encoder = opuslib.Encoder(_SAMPLE_RATE, _CHANNELS, opuslib.APPLICATION_VOIP)
+
+            self._encoder = opuslib.Encoder(
+                _SAMPLE_RATE, _CHANNELS, opuslib.APPLICATION_VOIP
+            )
             self._decoder = opuslib.Decoder(_SAMPLE_RATE, _CHANNELS)
             self._available = True
             logger.info("Opus codec loaded successfully.")
@@ -45,7 +45,7 @@ class OpusCodec:
                 "opuslib not installed; using raw PCM. "
                 "Install with: pip install opuslib"
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Opus codec initialization failed: %s", exc)
 
     @property
@@ -54,10 +54,10 @@ class OpusCodec:
 
     def encode_pcm_to_opus(self, pcm_int16: bytes) -> bytes:
         """Encode 16-bit PCM to Opus frame.
-        
+
         Args:
             pcm_int16: Raw 16-bit PCM bytes (little-endian)
-            
+
         Returns:
             Opus-encoded frame bytes, or original PCM if codec unavailable
         """
@@ -73,19 +73,19 @@ class OpusCodec:
                     samples = np.pad(samples, (0, _FRAME_SIZE - len(samples)))
                 else:
                     samples = samples[:_FRAME_SIZE]
-            
+
             opus_data = self._encoder.encode(samples.tobytes(), _FRAME_SIZE)
             return opus_data
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("Opus encode failed, falling back to PCM: %s", exc)
             return pcm_int16
 
     def decode_opus_to_pcm(self, opus_data: bytes) -> bytes:
         """Decode Opus frame to 16-bit PCM.
-        
+
         Args:
             opus_data: Opus-encoded frame bytes
-            
+
         Returns:
             Decoded 16-bit PCM bytes (little-endian)
         """
@@ -95,7 +95,7 @@ class OpusCodec:
         try:
             pcm_bytes = self._decoder.decode(opus_data, _FRAME_SIZE)
             return pcm_bytes
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("Opus decode failed: %s", exc)
             return opus_data
 
@@ -106,7 +106,7 @@ class OpusCodec:
 
 class AudioFrameBuffer:
     """Buffer for assembling Opus frames from streaming audio."""
-    
+
     def __init__(self, frame_size: int = _FRAME_SIZE * 2) -> None:
         self._frame_size = frame_size
         self._buffer = bytearray()
@@ -114,24 +114,24 @@ class AudioFrameBuffer:
 
     def feed(self, data: bytes) -> list[bytes]:
         """Feed raw bytes and return complete frames.
-        
+
         Args:
             data: Raw audio bytes
-            
+
         Returns:
             List of complete frames ready for encoding
         """
         self._buffer.extend(data)
         frames = []
-        
+
         while len(self._buffer) >= self._frame_size:
-            frame = bytes(self._buffer[:self._frame_size])
-            del self._buffer[:self._frame_size]
+            frame = bytes(self._buffer[: self._frame_size])
+            del self._buffer[: self._frame_size]
             frames.append(frame)
-        
+
         return frames
 
-    def flush(self) -> Optional[bytes]:
+    def flush(self) -> bytes | None:
         """Return any remaining partial frame."""
         if self._buffer:
             remaining = bytes(self._buffer)
@@ -146,7 +146,7 @@ class AudioFrameBuffer:
 
 
 # Global codec instance
-_codec: Optional[OpusCodec] = None
+_codec: OpusCodec | None = None
 
 
 def get_codec() -> OpusCodec:

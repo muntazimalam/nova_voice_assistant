@@ -25,7 +25,7 @@ jobs:
       uses: actions/cache@v3
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
     
@@ -36,13 +36,11 @@ jobs:
     
     - name: Run linting
       run: |
-        pip install ruff
         ruff check app/ tests/
         ruff format --check app/ tests/
     
     - name: Run type checking
       run: |
-        pip install mypy
         mypy app/ --ignore-missing-imports
     
     - name: Run tests

@@ -48,3 +48,12 @@ ENV/
 # Downloaded models (faster-whisper cache, openwakeword custom models)
 models/
 .cache/
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Coverage
+coverage.xml
+.coverage

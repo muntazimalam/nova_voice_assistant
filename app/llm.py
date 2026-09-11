@@ -1,19 +1,18 @@
 """LLM service using Google Gemini (google-genai SDK), streaming tokens."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, AsyncIterator, List
+from collections.abc import AsyncIterator
+from typing import Any
 
 # Top-level imports satisfy Pylance/Pyright static analysis.
 # google-genai is a lightweight import (no model weights), so it is safe here.
-import google.genai as genai
+from google import genai
 from google.genai import types
 
 from .config import Settings
-
-if TYPE_CHECKING:
-    from google.genai.client import AsyncClient
 
 logger = logging.getLogger("voice_assistant")
 
@@ -34,7 +33,9 @@ class LLMService:
                 "Add it to your .env file "
                 "(create one at https://aistudio.google.com/apikey)."
             )
-        logger.info("Initializing Gemini client (model=%s)…", self._settings.gemini_model)
+        logger.info(
+            "Initializing Gemini client (model=%s)…", self._settings.gemini_model
+        )
         self._client = genai.Client(
             api_key=api_key,
             http_options=types.HttpOptions(
@@ -53,7 +54,7 @@ class LLMService:
         return self._client
 
     @staticmethod
-    def _translate(messages: List[dict]) -> list:
+    def _translate(messages: list[dict]) -> list:
         """Translate simple {role, content} dicts into Gemini Content objects."""
         contents = []
         for msg in messages:
@@ -62,9 +63,7 @@ class LLMService:
             # Gemini uses "model" for the assistant role (not "assistant").
             if role == "assistant":
                 role = "model"
-            contents.append(
-                types.Content(role=role, parts=[types.Part(text=text)])
-            )
+            contents.append(types.Content(role=role, parts=[types.Part(text=text)]))
         return contents
 
     def _candidate_models(self) -> list:
@@ -124,14 +123,15 @@ class LLMService:
             return name, gen, token, None
 
         tasks = [asyncio.create_task(first_token(n)) for n in racers]
-        loser_tasks = []
+        loser_tasks: set[asyncio.Task[Any]] = set()
         try:
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED
+            )
             for t in pending:
                 t.cancel()
             loser_tasks = pending
 
-            winner_gen = None
             winner_err = None
             yielded = False
             errored = False
@@ -143,7 +143,6 @@ class LLMService:
                     await gen.aclose()
                     continue
                 if token is not None:
-                    winner_gen = gen
                     winner_err = None
                     errored = False
                     yielded = True
@@ -169,12 +168,18 @@ class LLMService:
         # one sequential shot before failing.
         for name in candidates[2:]:
             try:
-                async for text in self._stream_model(client, name, config, history, final_text):
+                async for text in self._stream_model(
+                    client, name, config, history, final_text
+                ):
                     yield text
                 return
             except Exception as exc:  # noqa: BLE001
                 winner_err = exc
-                logger.warning("LLM model %s failed before tokens (%s); trying fallback...", name, exc)
+                logger.warning(
+                    "LLM model %s failed before tokens (%s); trying fallback...",
+                    name,
+                    exc,
+                )
 
         if not errored and winner_err is None:
             return  # empty reply (unchanged output), e.g. prompt filtered
@@ -182,7 +187,7 @@ class LLMService:
         if winner_err is not None:
             raise winner_err
 
-    async def stream_reply(self, messages: List[dict]) -> AsyncIterator[str]:
+    async def stream_reply(self, messages: list[dict]) -> AsyncIterator[str]:
         """Stream LLM reply tokens one by one with resilient fallback.
 
         Uses the chat API (`chats.create` + `send_message_stream`), which the
@@ -216,16 +221,19 @@ class LLMService:
         # primary consumed the entire budget, so the fast fallback never got to
         # answer. Now a throttled primary yields to the next candidate. The
         # primary gets a bigger slice (~2x a fallback) so it normally wins.
-        total_deadline = (asyncio.get_running_loop().time() +
-                          self._settings.llm_timeout_seconds)
+        total_deadline = (
+            asyncio.get_running_loop().time() + self._settings.llm_timeout_seconds
+        )
         num_candidates = max(1, len(candidates))
         weights = [2.0] + [1.0] * (num_candidates - 1)
         base_unit = self._settings.llm_timeout_seconds / sum(weights)
 
-        last_err = None
+        last_err: Exception | None = None
         if self._settings.gemini_race_fallback and len(candidates) >= 2:
             async with asyncio.timeout(self._settings.llm_timeout_seconds):
-                async for text in self._stream_raced(client, config, history, final_text, candidates):
+                async for text in self._stream_raced(
+                    client, config, history, final_text, candidates
+                ):
                     yield text
             return
 
@@ -234,11 +242,17 @@ class LLMService:
             if remaining <= 0:
                 break
             # Last candidate may use whatever remains of the overall budget.
-            budget = remaining if i == num_candidates - 1 else min(base_unit * weights[i], remaining)
+            budget = (
+                remaining
+                if i == num_candidates - 1
+                else min(base_unit * weights[i], remaining)
+            )
             tokens_yielded = False
             try:
                 async with asyncio.timeout(budget):
-                    async for text in self._stream_model(client, model_name, config, history, final_text):
+                    async for text in self._stream_model(
+                        client, model_name, config, history, final_text
+                    ):
                         tokens_yielded = True
                         yield text
                 return
@@ -246,21 +260,29 @@ class LLMService:
                 if tokens_yielded:
                     # Tokens already reached the user; switching models now would
                     # splice two replies together. Surface the failure instead.
-                    logger.error("LLM stream timed out mid-generation on %s.", model_name)
+                    logger.error(
+                        "LLM stream timed out mid-generation on %s.", model_name
+                    )
                     raise
-                last_err = TimeoutError(
-                    f"{model_name} timed out after {budget:.1f}s"
-                )
+                last_err = TimeoutError(f"{model_name} timed out after {budget:.1f}s")
                 logger.warning(
-                    "LLM model %s timed out after %.1fs; trying fallback...", model_name, budget,
+                    "LLM model %s timed out after %.1fs; trying fallback...",
+                    model_name,
+                    budget,
                 )
                 continue
             except Exception as exc:
                 last_err = exc
                 if tokens_yielded:
-                    logger.error("LLM stream broke mid-generation on %s: %s", model_name, exc)
+                    logger.error(
+                        "LLM stream broke mid-generation on %s: %s", model_name, exc
+                    )
                     raise
-                logger.warning("LLM model %s failed before tokens (%s); trying fallback...", model_name, exc)
+                logger.warning(
+                    "LLM model %s failed before tokens (%s); trying fallback...",
+                    model_name,
+                    exc,
+                )
                 continue
 
         if last_err:

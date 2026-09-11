@@ -11,6 +11,7 @@ Strategies
   ``models/wake/``, otherwise fall back to whisper sniffing (works for any
   ``wake_phrases`` out of the box).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +19,7 @@ import logging
 import re
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -35,8 +37,8 @@ class WakeDetector:
         self._stt = stt
         self._lock = asyncio.Lock()
         self._last_sniff_ms: float = 0.0
-        self._ow = None
-        self._ow_names = []
+        self._ow: Any = None
+        self._ow_names: list[str] = []
         self._using_builtin_gate = False
         self._strategy = self._resolve_strategy()
 
@@ -77,8 +79,7 @@ class WakeDetector:
         if not model_dir.exists():
             return []
         return [
-            p for p in model_dir.iterdir()
-            if p.suffix.lower() in (".tflite", ".onnx")
+            p for p in model_dir.iterdir() if p.suffix.lower() in (".tflite", ".onnx")
         ]
 
     def _load_openwakeword(self) -> bool:
@@ -86,7 +87,9 @@ class WakeDetector:
             # pyrefly: ignore [missing-import]
             from openwakeword.model import Model as OWModel
         except ImportError:
-            logger.info("openwakeword package not installed; using whisper wake detection.")
+            logger.info(
+                "openwakeword package not installed; using whisper wake detection."
+            )
             return False
 
         try:
@@ -182,7 +185,10 @@ class WakeDetector:
             samples = np.frombuffer(pcm, dtype=np.int16)
             if len(samples) < 1280:
                 return False
-            predictions = self._ow.predict(samples)
+            ow = self._ow
+            if ow is None:
+                return False
+            predictions = ow.predict(samples)
             for name in self._ow_names:
                 scores = np.asarray(predictions.get(name, [])).ravel()
                 if scores.size == 0:

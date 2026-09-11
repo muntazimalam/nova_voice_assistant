@@ -1,6 +1,7 @@
 """Shared pytest fixtures: make the project root importable and keep app
 imports offline (no model downloads, no API calls).
 """
+
 import sys
 from pathlib import Path
 
@@ -11,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 def pytest_configure(config):
     """Ensure importing app.main never triggers HTTP/model downloads in tests."""
-    import app.main as main
+    from app import main
 
     # Do real warmup in dev, never in tests.
     main._warmup = lambda: None

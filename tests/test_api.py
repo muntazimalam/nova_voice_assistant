@@ -1,10 +1,9 @@
 """HTTP + WebSocket protocol tests against the live app (services stubbed)."""
-import json
 
 import pytest
 from fastapi.testclient import TestClient
 
-import app.main as main
+from app import main
 
 
 @pytest.fixture

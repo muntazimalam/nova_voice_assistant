@@ -1,4 +1,5 @@
 """Application settings loaded from environment variables (.env)."""
+
 from pydantic import Field
 from pydantic.aliases import AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -47,7 +48,9 @@ class Settings(BaseSettings):
     whisper_device: str = "auto"
     whisper_compute_type: str = "int8"
     whisper_language: str = "en"
-    whisper_normalize: bool = True  # peak-normalize captured audio so quiet mics still transcribe
+    whisper_normalize: bool = (
+        True  # peak-normalize captured audio so quiet mics still transcribe
+    )
 
     # Wake word
     assistant_name: str = "nova"

@@ -3,11 +3,10 @@
 Provides more accurate silence detection than simple RMS thresholding,
 reducing false triggers and improving user experience.
 """
+
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Optional
 
 import numpy as np
 
@@ -19,7 +18,7 @@ _MODEL_SAMPLE_RATE = 16000
 
 class SileroVAD:
     """Silero Voice Activity Detection for accurate endpointing.
-    
+
     Falls back to RMS-based detection if Silero model is unavailable.
     """
 
@@ -42,14 +41,15 @@ class SileroVAD:
         """Load the Silero VAD model."""
         try:
             import torch
+
             self._torch = torch
-            
+
             # Try to load from torch hub
             self._model, _ = torch.hub.load(
-                repo_or_dir='snakers4/silero-vad',
-                model='silero_vad',
+                repo_or_dir="snakers4/silero-vad",
+                model="silero_vad",
                 force_reload=False,
-                trust_repo=True
+                trust_repo=True,
             )
             self._available = True
             logger.info("Silero VAD model loaded successfully.")
@@ -58,8 +58,10 @@ class SileroVAD:
                 "torch not installed; using RMS-based VAD. "
                 "Install with: pip install torch"
             )
-        except Exception as exc:
-            logger.warning("Silero VAD initialization failed: %s; using RMS-based VAD.", exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Silero VAD initialization failed: %s; using RMS-based VAD.", exc
+            )
 
     @property
     def available(self) -> bool:
@@ -67,11 +69,11 @@ class SileroVAD:
 
     def is_speech(self, pcm_int16: bytes, sample_rate: int = _SAMPLE_RATE) -> bool:
         """Detect if audio chunk contains speech.
-        
+
         Args:
             pcm_int16: Raw 16-bit PCM bytes
             sample_rate: Audio sample rate
-            
+
         Returns:
             True if speech detected
         """
@@ -81,20 +83,20 @@ class SileroVAD:
         try:
             samples = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32)
             samples = samples / 32768.0  # Normalize to [-1, 1]
-            
+
             # Resample if needed
             if sample_rate != _MODEL_SAMPLE_RATE:
                 samples = self._resample(samples, sample_rate, _MODEL_SAMPLE_RATE)
-            
+
             # Convert to tensor
             tensor = self._torch.from_numpy(samples).unsqueeze(0)
-            
+
             # Get VAD probability
             with self._torch.no_grad():
                 prob = self._model(tensor, _MODEL_SAMPLE_RATE).item()
-            
+
             return prob >= self._threshold
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("Silero VAD failed, falling back to RMS: %s", exc)
             return self._rms_fallback(pcm_int16)
 
@@ -122,16 +124,16 @@ class SileroVAD:
         if self._available and self._model is not None:
             try:
                 self._model.reset_states()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
 
 class EndpointDetector:
     """Combines Silero VAD with traditional silence detection for robust endpointing."""
-    
+
     def __init__(
         self,
-        vad: Optional[SileroVAD] = None,
+        vad: SileroVAD | None = None,
         silence_timeout_ms: float = 450.0,
         min_command_ms: float = 250.0,
     ) -> None:
@@ -142,36 +144,38 @@ class EndpointDetector:
         self._command_start_ms: float = 0.0
         self._has_speech = False
 
-    def update(self, pcm_int16: bytes, now_ms: float) -> Optional[str]:
+    def update(self, pcm_int16: bytes, now_ms: float) -> str | None:
         """Update endpoint detector with new audio chunk.
-        
+
         Args:
             pcm_int16: Raw 16-bit PCM bytes
             now_ms: Current time in milliseconds
-            
+
         Returns:
             "speech" if speech detected
             "endpoint" if endpoint detected
             "" otherwise
         """
         is_speech = self._vad.is_speech(pcm_int16)
-        
+
         if is_speech:
             self._last_speech_ms = now_ms
             self._has_speech = True
             if self._command_start_ms == 0.0:
                 self._command_start_ms = now_ms
             return "speech"
-        
+
         if self._has_speech and self._last_speech_ms > 0:
             silence_duration = now_ms - self._last_speech_ms
             command_duration = now_ms - self._command_start_ms
-            
-            if (silence_duration >= self._silence_timeout_ms and 
-                command_duration >= self._min_command_ms):
+
+            if (
+                silence_duration >= self._silence_timeout_ms
+                and command_duration >= self._min_command_ms
+            ):
                 self.reset()
                 return "endpoint"
-        
+
         return ""
 
     def reset(self) -> None:
@@ -183,8 +187,8 @@ class EndpointDetector:
 
 
 # Global instances
-_vad: Optional[SileroVAD] = None
-_endpoint_detector: Optional[EndpointDetector] = None
+_vad: SileroVAD | None = None
+_endpoint_detector: EndpointDetector | None = None
 
 
 def get_vad() -> SileroVAD:
